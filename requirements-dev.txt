@@ -1,0 +1,5 @@
+# Development dependencies for testing
+-r requirements.txt
+
+# Testing
+pytest>=7.0.0

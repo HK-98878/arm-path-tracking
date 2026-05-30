@@ -1,0 +1,43 @@
+<mujoco model="panda_tracking">
+  <!-- Include Franka Panda model without hand (7 DOF only) -->
+  <include file="../mujoco_menagerie/franka_emika_panda/panda_nohand.xml"/>
+
+  <!-- Statistics for camera and visualization (centered on workspace) -->
+  <statistic center="0.3 0 0.4" extent="1.2"/>
+
+  <!-- Visual settings optimized for headless rendering -->
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="120" elevation="-20"/>
+  </visual>
+
+  <!-- Assets -->
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="512"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <!-- Lighting -->
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+
+    <!-- Ground plane -->
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+
+    <!-- Optional: Visual sphere at path center for debugging (can be removed) -->
+    <!-- <body name="path_center" pos="0.5 0 0.3">
+      <geom name="center_marker" type="sphere" size="0.01" rgba="1 0 0 0.3" contype="0" conaffinity="0"/>
+    </body> -->
+  </worldbody>
+
+  <!-- Compiler settings -->
+  <compiler angle="radian" autolimits="true"/>
+
+  <!-- Physics settings -->
+  <option timestep="0.002" integrator="RK4">
+    <flag gravity="enable"/>
+  </option>
+</mujoco>
