@@ -263,26 +263,40 @@ class PPO:
 
         return metrics
 
-    def save(self, path: str):
+    def save(self, path: str, obs_rms=None):
         """Save model checkpoint.
 
         Args:
             path: Path to save checkpoint
+            obs_rms: Optional observation normalization stats
         """
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        torch.save({
+        checkpoint = {
             'actor_critic': self.actor_critic.state_dict(),
             'optimizer': self.optimizer.state_dict(),
             'num_timesteps': self.num_timesteps
-        }, path)
+        }
 
-    def load(self, path: str):
+        if obs_rms is not None:
+            checkpoint['obs_rms_mean'] = obs_rms.mean
+            checkpoint['obs_rms_var'] = obs_rms.var
+            checkpoint['obs_rms_count'] = obs_rms.count
+
+        torch.save(checkpoint, path)
+
+    def load(self, path: str, obs_rms=None):
         """Load model checkpoint.
 
         Args:
             path: Path to checkpoint
+            obs_rms: Optional observation normalization stats to restore
         """
         checkpoint = torch.load(path, map_location=self.device)
         self.actor_critic.load_state_dict(checkpoint['actor_critic'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
         self.num_timesteps = checkpoint['num_timesteps']
+
+        if obs_rms is not None and 'obs_rms_mean' in checkpoint:
+            obs_rms.mean = checkpoint['obs_rms_mean']
+            obs_rms.var = checkpoint['obs_rms_var']
+            obs_rms.count = checkpoint['obs_rms_count']

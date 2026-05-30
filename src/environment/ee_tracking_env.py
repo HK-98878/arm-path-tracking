@@ -153,18 +153,29 @@ class EETrackingEnv(gym.Env):
         # Forward kinematics
         mujoco.mj_forward(self.model, self.data)
 
+        # Find closest point on path to start tracking
+        ee_pos = self.data.xpos[self.ee_body_id]
+
+        # Search for closest arc length
+        s_samples = np.linspace(0, self.path.total_length, 100)
+        errors = []
+        for s in s_samples:
+            pos = self.path.position(s)
+            error = np.linalg.norm(ee_pos - pos)
+            errors.append(error)
+
+        closest_idx = np.argmin(errors)
+        self.s_current = s_samples[closest_idx]
+
         # Print initial EE position for debugging (first reset only)
         if not hasattr(self, '_printed_init_pos'):
-            ee_pos = self.data.xpos[self.ee_body_id]
-            target_pos = self.path.position(0.0)
+            target_pos = self.path.position(self.s_current)
             init_error = np.linalg.norm(ee_pos - target_pos)
             print(f"\n  Initial EE position: {ee_pos}")
-            print(f"  Target position (s=0): {target_pos}")
+            print(f"  Starting at s={self.s_current:.3f} (closest point)")
+            print(f"  Target position: {target_pos}")
             print(f"  Initial error: {init_error*1000:.1f}mm")
             self._printed_init_pos = True
-
-        # Reset path tracking
-        self.s_current = 0.0
 
         # Reset episode state
         self.step_count = 0

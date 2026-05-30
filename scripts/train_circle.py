@@ -23,6 +23,7 @@ from src.paths.circle_path import CirclePath
 from src.rl.ppo import PPO
 from src.utils.config import load_config
 from src.utils.metrics import compute_jitter_metrics, compute_tracking_error_metrics
+from src.utils.normalization import RunningMeanStd
 
 
 def make_env(config):
@@ -50,12 +51,13 @@ def make_env(config):
     return env
 
 
-def evaluate(env, agent, num_episodes=5):
+def evaluate(env, agent, obs_rms, num_episodes=5):
     """Evaluate agent performance.
 
     Args:
         env: Environment
         agent: PPO agent
+        obs_rms: Observation normalization statistics
         num_episodes: Number of evaluation episodes
 
     Returns:
@@ -69,6 +71,7 @@ def evaluate(env, agent, num_episodes=5):
 
     for _ in range(num_episodes):
         obs, _ = env.reset()
+        obs = obs_rms.normalize(obs)  # Normalize observation
         done = False
         episode_reward = 0
         episode_length = 0
@@ -89,6 +92,7 @@ def evaluate(env, agent, num_episodes=5):
             episode_targets.append(target_pos)
 
             obs, reward, terminated, truncated, info = env.step(action)
+            obs = obs_rms.normalize(obs)  # Normalize observation
             done = terminated or truncated
 
             episode_reward += reward
@@ -173,8 +177,13 @@ def train(config):
     print(f"  n_steps per update: {config.ppo.n_steps}")
     print(f"  Total updates: {config.training.total_timesteps // config.ppo.n_steps}")
 
+    obs_rms = RunningMeanStd(shape=env.observation_space.shape)
+    print(f"  Using running observation normalization")
+
     # Training loop
     obs, _ = env.reset()
+    obs_rms.update(obs)
+    obs = obs_rms.normalize(obs)
     episode_reward = 0
     episode_length = 0
     num_episodes = 0
@@ -187,6 +196,9 @@ def train(config):
         next_obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
 
+        obs_rms.update(next_obs)
+        next_obs_normalized = obs_rms.normalize(next_obs)
+
         # Store transition
         agent.store_transition(obs, action, reward, value, log_prob, done)
 
@@ -194,12 +206,14 @@ def train(config):
         episode_length += 1
 
         # Update observation
-        obs = next_obs
+        obs = next_obs_normalized
 
         # Episode end
         if done:
             num_episodes += 1
             obs, _ = env.reset()
+            obs_rms.update(obs)
+            obs = obs_rms.normalize(obs)
             episode_reward = 0
             episode_length = 0
 
@@ -223,7 +237,7 @@ def train(config):
             print(f"Evaluation at timestep {timestep + 1:,}")
             print('='*60)
 
-            eval_metrics = evaluate(env, agent, config.training.num_eval_episodes)
+            eval_metrics = evaluate(env, agent, obs_rms, config.training.num_eval_episodes)
 
             print(f"  Mean episode reward: {eval_metrics['mean_episode_reward']:.2f} ± {eval_metrics['std_episode_reward']:.2f}")
             print(f"  Mean episode length: {eval_metrics['mean_episode_length']:.1f}")
@@ -235,12 +249,12 @@ def train(config):
         # Save checkpoint
         if (timestep + 1) % config.training.save_frequency == 0:
             checkpoint_path = output_dir / f"checkpoint_{timestep + 1}.pt"
-            agent.save(str(checkpoint_path))
+            agent.save(str(checkpoint_path), obs_rms=obs_rms)
             print(f"\n  Saved checkpoint: {checkpoint_path}")
 
     # Final save
     final_path = output_dir / "final_model.pt"
-    agent.save(str(final_path))
+    agent.save(str(final_path), obs_rms=obs_rms)
     print(f"\n{'='*60}")
     print(f"Training complete! Final model saved to: {final_path}")
     print('='*60)
