@@ -203,17 +203,15 @@ def compute_jacobian_mujoco(
     import mujoco
 
     nv = model.nv  # Number of velocity DOFs
-    jacp = np.zeros(3 * nv)  # Linear velocity Jacobian (flattened)
-    jacr = np.zeros(3 * nv)  # Angular velocity Jacobian (flattened)
+
+    jacp = np.zeros((3, nv))  # Linear velocity Jacobian
+    jacr = np.zeros((3, nv))  # Angular velocity Jacobian
 
     if point_offset is None:
         point_offset = np.zeros(3)
 
-    # MuJoCo function fills jacp and jacr
+    # MuJoCo function fills jacp and jacr in place
     mujoco.mj_jacBody(model, data, jacp, jacr, body_id)
-
-    jacp = jacp.reshape(3, nv)
-    jacr = jacr.reshape(3, nv)
     jacobian = np.vstack([jacp, jacr])  # (6, nv)
 
     return jacobian

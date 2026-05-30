@@ -39,7 +39,7 @@ def compute_jitter_metrics(
 
     # Integrated squared jerk
     jerk_squared = np.sum(action_ddot ** 2, axis=1)  # (T-2,)
-    integrated_squared_jerk = np.trapz(jerk_squared, dx=dt)
+    integrated_squared_jerk = np.trapezoid(jerk_squared, dx=dt)
 
     # Max and mean action derivative
     action_change_magnitude = np.linalg.norm(action_dot, axis=1)  # (T-1,)
