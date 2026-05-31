@@ -242,7 +242,7 @@ class EETrackingEnv(gym.Env):
             ee_vel=state_new.ee_lin_vel_world,
             target_pos=target_pos,
             target_quat=None,  # Step 1: no orientation
-            target_vel=None,   # Step 1: no velocity matching
+            target_vel=target_vel,  # Enable velocity matching
             action=action,
             prev_action=self.prev_action,
             joint_vel=state_new.joint_vel

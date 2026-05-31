@@ -25,23 +25,25 @@ control:
     lambda_max: 0.1
     manip_threshold: 0.05
 
-# Reward (Step 1: position only)
+# Reward (Step 3: position + velocity matching)
 reward:
   w_pos: 1.0
   w_ori: 0.0  # Disabled for Step 1
-  w_vel: 0.0  # Disabled for Step 1-2
+  w_vel: 1.0  # Enable velocity matching - "move with path" not just "be near point"
   w_action_rate: 0.001
   w_joint_vel: 0.0001
-  sig_pos: 0.50
-  sig_ori: 0.1   # Not used in Step 1
-  sig_vel: 0.05  # Not used in Step 1
+  # sig_pos=0.15 gives strong gradient at small errors:
+  #   at 50mm: 0.89, at 100mm: 0.64, at 150mm: 0.37
+  sig_pos: 0.15
+  sig_ori: 0.1   # Not used yet
+  sig_vel: 0.15
 
 # PPO
 ppo:
-  learning_rate: 0.0003
+  learning_rate: 0.0001  # Reduced from 0.0003 for stability
   gamma: 0.99
   gae_lambda: 0.95
-  clip_epsilon: 0.2
+  clip_epsilon: 0.1  # Reduced from 0.2 for more conservative updates
   n_steps: 2048  # Steps before update
   n_epochs: 10   # Optimization epochs per update
   batch_size: 64
