@@ -23,7 +23,7 @@ from src.paths.circle_path import CirclePath
 from src.rl.ppo import PPO
 from src.utils.config import load_config
 from src.utils.metrics import compute_jitter_metrics, compute_tracking_error_metrics
-from src.utils.normalization import RunningMeanStd
+from src.utils.normalization import RunningMeanStd, RewardNormalizer
 
 
 def make_env(config):
@@ -178,7 +178,12 @@ def train(config):
     print(f"  Total updates: {config.training.total_timesteps // config.ppo.n_steps}")
 
     obs_rms = RunningMeanStd(shape=env.observation_space.shape)
-    print(f"  Using running observation normalization")
+    reward_normalizer = RewardNormalizer(gamma=config.ppo.gamma)
+
+    # Warmup period for normalization (freeze after this)
+    warmup_steps = getattr(config.training, 'normalization_warmup', 10000)
+    print(f"  Using running observation normalization (freeze after {warmup_steps} steps)")
+    print(f"  Using reward normalization")
 
     # Training loop
     obs, _ = env.reset()
@@ -189,6 +194,12 @@ def train(config):
     num_episodes = 0
 
     for timestep in range(config.training.total_timesteps):
+        # Freeze normalization after warmup
+        if timestep == warmup_steps:
+            obs_rms.freeze()
+            reward_normalizer.freeze()
+            print(f"\n  [Step {timestep}] Normalization frozen.")
+
         # Select action
         action, value, log_prob = agent.select_action(obs)
 
@@ -196,11 +207,14 @@ def train(config):
         next_obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
 
+        # Normalize reward
+        reward_normalized = reward_normalizer.normalize(reward, done)
+
         obs_rms.update(next_obs)
         next_obs_normalized = obs_rms.normalize(next_obs)
 
-        # Store transition
-        agent.store_transition(obs, action, reward, value, log_prob, done)
+        # Store transition with normalized reward
+        agent.store_transition(obs, action, reward_normalized, value, log_prob, done)
 
         episode_reward += reward
         episode_length += 1
@@ -249,12 +263,12 @@ def train(config):
         # Save checkpoint
         if (timestep + 1) % config.training.save_frequency == 0:
             checkpoint_path = output_dir / f"checkpoint_{timestep + 1}.pt"
-            agent.save(str(checkpoint_path), obs_rms=obs_rms)
+            agent.save(str(checkpoint_path), obs_rms=obs_rms, reward_normalizer=reward_normalizer)
             print(f"\n  Saved checkpoint: {checkpoint_path}")
 
     # Final save
     final_path = output_dir / "final_model.pt"
-    agent.save(str(final_path), obs_rms=obs_rms)
+    agent.save(str(final_path), obs_rms=obs_rms, reward_normalizer=reward_normalizer)
     print(f"\n{'='*60}")
     print(f"Training complete! Final model saved to: {final_path}")
     print('='*60)

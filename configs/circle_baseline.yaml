@@ -66,6 +66,7 @@ training:
   save_frequency: 50000     # Save checkpoint every 50k steps
   log_frequency: 1000       # Log metrics every 1k steps
   num_eval_episodes: 5      # Episodes for evaluation
+  normalization_warmup: 10000  # Freeze obs/reward normalization after this many steps
 
 # Logging
 logging:
