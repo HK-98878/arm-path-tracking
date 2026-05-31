@@ -314,29 +314,41 @@ class EETrackingEnv(gym.Env):
         """Convert policy action to EE twist in world frame.
 
         Args:
-            action: Policy action ∈ [-1, 1]^6
+            action: Policy action ∈ [-1, 1]^6 (in EE frame)
 
         Returns:
             dx_ee_world: (6,) EE twist * dt in world frame
 
         Note:
             Residual-feedforward formulation:
-            dx_ee = feedforward_step + action_scale * action
+            dx_ee = feedforward_step + R_we @ (action_scale * action)
+
+            The policy observes errors in EE frame, so its corrections are
+            in EE frame. We transform them to world frame before adding to
+            the feedforward (which is already in world frame).
         """
-        # Feedforward: tangent step from path geometry
+        # Get current EE rotation for frame transformation
+        ee_quat_mj = self.data.xquat[self.ee_body_id]  # [w,x,y,z] MuJoCo format
+        ee_quat = np.array([ee_quat_mj[1], ee_quat_mj[2], ee_quat_mj[3], ee_quat_mj[0]])
+        R_we = quat_to_matrix(ee_quat)  # world <- ee rotation
+
+        # Feedforward: tangent step from path geometry (world frame)
         v_ref = self.path.velocity(self.s_current)
         feedforward_linear = v_ref * self.dt
 
         # For Step 1: no angular feedforward (no orientation tracking)
         feedforward_angular = np.zeros(3)
 
-        feedforward = np.concatenate([feedforward_linear, feedforward_angular])
+        # Residual: policy output is in EE frame, transform to world frame
+        residual_ee = self.action_scale * action
+        residual_linear_world = R_we @ residual_ee[:3]
+        residual_angular_world = R_we @ residual_ee[3:]
 
-        # Residual: scaled action
-        residual = self.action_scale * action
-
-        # Total twist
-        dx_ee_world = feedforward + residual
+        # Total twist in world frame
+        dx_ee_world = np.concatenate([
+            feedforward_linear + residual_linear_world,
+            feedforward_angular + residual_angular_world
+        ])
 
         return dx_ee_world
 

@@ -17,7 +17,8 @@ path:
 
 # Control
 control:
-  action_scale: [0.05, 0.05, 0.05, 0.10, 0.10, 0.10]  # [lin_x, lin_y, lin_z, ang_x, ang_y, ang_z] (increased from 0.02)
+  # Design doc recommends 0.02 for linear - keeps residual ~10x feedforward (not 43x)
+  action_scale: [0.02, 0.02, 0.02, 0.05, 0.05, 0.05]  # [lin_x, lin_y, lin_z, ang_x, ang_y, ang_z]
   dls:
     k_limit: 0.5
     lambda_min: 0.0001
