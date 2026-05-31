@@ -30,9 +30,9 @@ reward:
   w_pos: 1.0
   w_ori: 0.0  # Disabled for Step 1
   w_vel: 0.0  # Disabled for Step 1-2
-  w_action_rate: 0.001  # Reduced from 0.01
-  w_joint_vel: 0.0001   # Reduced from 0.001
-  sig_pos: 0.10  # 10cm (increased to give gradient when far)
+  w_action_rate: 0.001
+  w_joint_vel: 0.0001
+  sig_pos: 0.50
   sig_ori: 0.1   # Not used in Step 1
   sig_vel: 0.05  # Not used in Step 1
 

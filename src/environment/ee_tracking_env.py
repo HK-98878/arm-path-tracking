@@ -353,15 +353,39 @@ class EETrackingEnv(gym.Env):
         return dx_ee_world
 
     def _advance_path_reference(self):
-        """Advance path reference (open-loop).
+        """Advance path reference using nearest-point (carrot-on-stick).
 
-        Note:
-            Uses open-loop advancement: s += ||v|| * dt
-            Can be replaced with "nearest point" (carrot) in future.
+        Instead of open-loop advancement which can outrun the robot,
+        we find the nearest point on the path and add a small lookahead.
+        This ensures the reference "waits" for the robot if it falls behind.
         """
-        v_ref = self.path.velocity(self.s_current)
-        ds = np.linalg.norm(v_ref) * self.dt
-        self.s_current = (self.s_current + ds) % self.path.total_length
+        # Get current EE position
+        ee_pos = self.data.xpos[self.ee_body_id]
+
+        # Find nearest point on path (search around current s)
+        # Search in a window around current position for efficiency
+        search_range = 0.2  # Search ±0.2m of arc length
+        n_samples = 50
+        s_min = self.s_current - search_range
+        s_max = self.s_current + search_range
+
+        s_samples = np.linspace(s_min, s_max, n_samples)
+        # Wrap to valid range [0, total_length)
+        s_samples = s_samples % self.path.total_length
+
+        # Find closest point
+        min_dist = float('inf')
+        nearest_s = self.s_current
+        for s in s_samples:
+            pos = self.path.position(s)
+            dist = np.linalg.norm(ee_pos - pos)
+            if dist < min_dist:
+                min_dist = dist
+                nearest_s = s
+
+        # Add small lookahead so reference stays slightly ahead
+        lookahead = 0.01  # 10mm lookahead in arc length
+        self.s_current = (nearest_s + lookahead) % self.path.total_length
 
     def render(self):
         """Render environment (optional, for debugging)."""
