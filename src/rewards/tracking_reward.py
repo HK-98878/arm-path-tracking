@@ -83,7 +83,8 @@ class TrackingReward:
             - p_joint_vel: Joint velocity penalty
         """
         # Position reward: bounded exponential
-        r_pos = self.w_pos * np.exp(-(pos_error / self.sig_pos) ** 2)
+        pos_quality = np.exp(-(pos_error / self.sig_pos) ** 2)
+        r_pos = self.w_pos * pos_quality
 
         # Orientation reward (if enabled)
         if self.w_ori > 0 and ori_error is not None:
@@ -92,8 +93,11 @@ class TrackingReward:
             r_ori = 0.0
 
         # Velocity matching reward (if enabled)
+        # Scale by pos_quality: when off-path, focus on position correction;
+        # when on-path, velocity matching kicks in to prevent overshoot
         if self.w_vel > 0 and vel_error is not None:
-            r_vel = self.w_vel * np.exp(-(vel_error / self.sig_vel) ** 2)
+            effective_w_vel = self.w_vel * pos_quality
+            r_vel = effective_w_vel * np.exp(-(vel_error / self.sig_vel) ** 2)
         else:
             r_vel = 0.0
 

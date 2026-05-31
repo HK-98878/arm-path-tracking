@@ -10,7 +10,9 @@ This script implements the first step of the progressive build order:
 
 import os
 import sys
+import json
 from pathlib import Path
+from datetime import datetime
 import numpy as np
 import torch
 
@@ -69,6 +71,14 @@ def evaluate(env, agent, obs_rms, num_episodes=5):
     all_positions = []
     all_targets = []
 
+    # Reward component accumulators
+    all_r_pos = []
+    all_r_ori = []
+    all_r_vel = []
+    all_p_action_rate = []
+    all_p_joint_vel = []
+    all_pos_errors = []
+
     for _ in range(num_episodes):
         obs, _ = env.reset()
         obs = obs_rms.normalize(obs)  # Normalize observation
@@ -79,6 +89,13 @@ def evaluate(env, agent, obs_rms, num_episodes=5):
         episode_positions = []
         episode_targets = []
 
+        # Per-episode reward components
+        ep_r_pos = []
+        ep_r_vel = []
+        ep_p_action_rate = []
+        ep_p_joint_vel = []
+        ep_pos_errors = []
+
         while not done:
             action, _, _ = agent.select_action(obs, deterministic=True)
 
@@ -88,8 +105,8 @@ def evaluate(env, agent, obs_rms, num_episodes=5):
             # Get current state for tracking
             state = env._get_robot_state()
             target_pos = env.path.position(env.s_current)
-            episode_positions.append(state.ee_pos_world)
-            episode_targets.append(target_pos)
+            episode_positions.append(state.ee_pos_world.copy())
+            episode_targets.append(target_pos.copy())
 
             obs, reward, terminated, truncated, info = env.step(action)
             obs = obs_rms.normalize(obs)  # Normalize observation
@@ -98,23 +115,46 @@ def evaluate(env, agent, obs_rms, num_episodes=5):
             episode_reward += reward
             episode_length += 1
 
+            # Collect reward components from info
+            ep_r_pos.append(info.get('r_pos', 0))
+            ep_r_vel.append(info.get('r_vel', 0))
+            ep_p_action_rate.append(info.get('p_action_rate', 0))
+            ep_p_joint_vel.append(info.get('p_joint_vel', 0))
+            ep_pos_errors.append(info.get('pos_error', 0))
+
         episode_rewards.append(episode_reward)
         episode_lengths.append(episode_length)
         all_actions.append(np.array(episode_actions))
         all_positions.append(np.array(episode_positions))
         all_targets.append(np.array(episode_targets))
 
+        all_r_pos.append(np.mean(ep_r_pos))
+        all_r_vel.append(np.mean(ep_r_vel))
+        all_p_action_rate.append(np.mean(ep_p_action_rate))
+        all_p_joint_vel.append(np.mean(ep_p_joint_vel))
+        all_pos_errors.extend(ep_pos_errors)
+
     # Aggregate metrics
     metrics = {
-        'mean_episode_reward': np.mean(episode_rewards),
-        'std_episode_reward': np.std(episode_rewards),
-        'mean_episode_length': np.mean(episode_lengths),
+        'mean_episode_reward': float(np.mean(episode_rewards)),
+        'std_episode_reward': float(np.std(episode_rewards)),
+        'mean_episode_length': float(np.mean(episode_lengths)),
+        # Reward components (averaged across episodes)
+        'mean_r_pos': float(np.mean(all_r_pos)),
+        'mean_r_vel': float(np.mean(all_r_vel)),
+        'mean_p_action_rate': float(np.mean(all_p_action_rate)),
+        'mean_p_joint_vel': float(np.mean(all_p_joint_vel)),
+        # Position error statistics
+        'pos_error_mean': float(np.mean(all_pos_errors)),
+        'pos_error_std': float(np.std(all_pos_errors)),
+        'pos_error_max': float(np.max(all_pos_errors)),
+        'pos_error_p90': float(np.percentile(all_pos_errors, 90)),
     }
 
     # Jitter metrics (from first episode)
     if len(all_actions) > 0:
         jitter = compute_jitter_metrics(all_actions[0], env.dt)
-        metrics.update({f'jitter_{k}': v for k, v in jitter.items()})
+        metrics.update({f'jitter_{k}': float(v) for k, v in jitter.items()})
 
     # Tracking error metrics (from first episode)
     if len(all_positions) > 0 and len(all_targets) > 0:
@@ -122,7 +162,7 @@ def evaluate(env, agent, obs_rms, num_episodes=5):
             all_positions[0],
             all_targets[0]
         )
-        metrics.update({f'tracking_{k}': v for k, v in tracking.items()})
+        metrics.update({f'tracking_{k}': float(v) for k, v in tracking.items()})
 
     return metrics
 
@@ -143,6 +183,24 @@ def train(config):
     # Create output directory
     output_dir = Path(config.logging.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Initialize training log
+    training_log = {
+        'start_time': datetime.now().isoformat(),
+        'config': {
+            'reward': config.reward.to_dict(),
+            'ppo': config.ppo.to_dict(),
+            'path': config.path.to_dict(),
+            'training': config.training.to_dict(),
+        },
+        'evaluations': [],
+        'training_updates': [],
+    }
+    log_path = output_dir / 'training_log.json'
+
+    def save_log():
+        with open(log_path, 'w') as f:
+            json.dump(training_log, f, indent=2)
 
     # Create environment
     print("Creating environment...")
@@ -245,6 +303,17 @@ def train(config):
                 print(f"  Approx KL: {update_metrics['approx_kl']:.4f}")
                 print(f"  Clip fraction: {update_metrics['clip_fraction']:.4f}")
 
+                # Log to JSON
+                training_log['training_updates'].append({
+                    'timestep': timestep + 1,
+                    'episodes': num_episodes,
+                    'policy_loss': float(update_metrics['policy_loss']),
+                    'value_loss': float(update_metrics['value_loss']),
+                    'entropy': float(-update_metrics['entropy_loss']),
+                    'approx_kl': float(update_metrics['approx_kl']),
+                    'clip_fraction': float(update_metrics['clip_fraction']),
+                })
+
         # Evaluation
         if (timestep + 1) % config.training.eval_frequency == 0:
             print(f"\n{'='*60}")
@@ -259,6 +328,13 @@ def train(config):
             print(f"  Max position error: {eval_metrics['tracking_max_position_error']*1000:.2f} mm")
             print(f"  Jitter (integrated squared jerk): {eval_metrics['jitter_integrated_squared_jerk']:.6f}")
             print(f"  High-freq power ratio: {eval_metrics['jitter_high_freq_power_ratio']:.4f}")
+            print(f"  Reward components: r_pos={eval_metrics['mean_r_pos']:.3f}, r_vel={eval_metrics['mean_r_vel']:.3f}")
+            print(f"  Penalties: action_rate={eval_metrics['mean_p_action_rate']:.2e}, joint_vel={eval_metrics['mean_p_joint_vel']:.2e}")
+
+            # Log to JSON
+            eval_entry = {'timestep': timestep + 1, **eval_metrics}
+            training_log['evaluations'].append(eval_entry)
+            save_log()
 
         # Save checkpoint
         if (timestep + 1) % config.training.save_frequency == 0:
@@ -269,8 +345,15 @@ def train(config):
     # Final save
     final_path = output_dir / "final_model.pt"
     agent.save(str(final_path), obs_rms=obs_rms, reward_normalizer=reward_normalizer)
+
+    # Save final log
+    training_log['end_time'] = datetime.now().isoformat()
+    training_log['total_episodes'] = num_episodes
+    save_log()
+
     print(f"\n{'='*60}")
     print(f"Training complete! Final model saved to: {final_path}")
+    print(f"Training log saved to: {log_path}")
     print('='*60)
 
     env.close()

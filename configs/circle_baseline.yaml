@@ -29,9 +29,9 @@ control:
 reward:
   w_pos: 1.0
   w_ori: 0.0  # Disabled for Step 1
-  w_vel: 1.0  # Enable velocity matching - "move with path" not just "be near point"
-  w_action_rate: 0.001
-  w_joint_vel: 0.0001
+  w_vel: 0.0  # Disabled for A/B test - isolating position-only convergence
+  w_action_rate: 0.1    # Increased 100x - was too weak to prevent jitter
+  w_joint_vel: 0.001   # Increased 10x
   # sig_pos=0.15 gives strong gradient at small errors:
   #   at 50mm: 0.89, at 100mm: 0.64, at 150mm: 0.37
   sig_pos: 0.15
@@ -40,12 +40,12 @@ reward:
 
 # PPO
 ppo:
-  learning_rate: 0.0001  # Reduced from 0.0003 for stability
+  learning_rate: 0.00003  # Reduced 3x more - KL was exploding
   gamma: 0.99
   gae_lambda: 0.95
-  clip_epsilon: 0.1  # Reduced from 0.2 for more conservative updates
-  n_steps: 2048  # Steps before update
-  n_epochs: 10   # Optimization epochs per update
+  clip_epsilon: 0.2
+  n_steps: 2048
+  n_epochs: 4    # Reduced from 10 - fewer passes over same data
   batch_size: 64
   ent_coef: 0.01
   vf_coef: 0.5
