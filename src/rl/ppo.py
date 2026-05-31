@@ -174,16 +174,31 @@ class PPO:
         }
 
         # Multiple epochs of optimization
+        include_next_obs = self.caps_loss.enabled and self.caps_loss.lambda_temporal > 0
         for epoch in range(self.n_epochs):
-            for batch in self.buffer.get(self.batch_size):
-                (
-                    obs_batch,
-                    actions_batch,
-                    old_values_batch,
-                    old_log_probs_batch,
-                    advantages_batch,
-                    returns_batch
-                ) = batch
+            for batch in self.buffer.get(self.batch_size, include_next_obs=include_next_obs):
+                if include_next_obs:
+                    (
+                        obs_batch,
+                        actions_batch,
+                        old_values_batch,
+                        old_log_probs_batch,
+                        advantages_batch,
+                        returns_batch,
+                        next_obs_batch,
+                        valid_temporal_mask
+                    ) = batch
+                else:
+                    (
+                        obs_batch,
+                        actions_batch,
+                        old_values_batch,
+                        old_log_probs_batch,
+                        advantages_batch,
+                        returns_batch
+                    ) = batch
+                    next_obs_batch = None
+                    valid_temporal_mask = None
 
                 # Evaluate actions
                 new_log_probs, entropy, new_values = \
@@ -215,11 +230,12 @@ class PPO:
                 # CAPS loss (if enabled)
                 caps_loss = torch.tensor(0.0, device=self.device)
                 if self.caps_loss.enabled:
-                    # For temporal: need consecutive observations
-                    # For simplicity in Step 1, just use spatial term
                     caps_dict = self.caps_loss.compute(
                         self.actor_critic.actor,
-                        obs_spatial=obs_batch
+                        obs_t=obs_batch if include_next_obs else None,
+                        obs_t_next=next_obs_batch,
+                        obs_spatial=obs_batch,
+                        valid_temporal_mask=valid_temporal_mask
                     )
                     caps_loss = caps_dict['caps_loss']
 

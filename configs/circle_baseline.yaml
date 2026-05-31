@@ -40,7 +40,7 @@ reward:
 
 # PPO
 ppo:
-  learning_rate: 0.00003  # Reduced 3x more - KL was exploding
+  learning_rate: 0.0001  # Back to 0.0001 - training was too slow
   gamma: 0.99
   gae_lambda: 0.95
   clip_epsilon: 0.2
@@ -52,11 +52,11 @@ ppo:
   max_grad_norm: 0.5
   hidden_sizes: [256, 256]
 
-# CAPS (disabled for Step 1)
+# CAPS - smoothness in policy loss (more principled than reward penalties)
 caps:
-  enabled: false
-  lambda_temporal: 0.01
-  lambda_spatial: 0.01
+  enabled: true
+  lambda_temporal: 0.1   # Penalize action changes between timesteps
+  lambda_spatial: 0.01   # Penalize sensitivity to observation noise
   spatial_noise_std: 0.01
 
 # Training

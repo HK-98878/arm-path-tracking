@@ -40,7 +40,8 @@ class CAPSLoss:
         self,
         actor: nn.Module,
         obs_t: torch.Tensor,
-        obs_t_next: torch.Tensor
+        obs_t_next: torch.Tensor,
+        valid_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """Compute temporal smoothness loss.
 
@@ -48,6 +49,7 @@ class CAPSLoss:
             actor: Policy network
             obs_t: Observations at time t (batch, obs_dim)
             obs_t_next: Observations at time t+1 (batch, obs_dim)
+            valid_mask: Optional mask for valid transitions (excludes episode boundaries)
 
         Returns:
             L_temporal: Temporal smoothness loss (scalar)
@@ -65,9 +67,18 @@ class CAPSLoss:
 
         action_t_next, _, _ = actor.get_action(obs_t_next, deterministic=True)
 
-        # L2 difference
+        # L2 difference per sample
         action_diff = action_t_next - action_t
-        loss = torch.mean(torch.sum(action_diff ** 2, dim=-1))
+        per_sample_loss = torch.sum(action_diff ** 2, dim=-1)
+
+        # Apply validity mask (exclude episode boundaries)
+        if valid_mask is not None:
+            per_sample_loss = per_sample_loss * valid_mask
+            # Mean over valid samples only
+            n_valid = valid_mask.sum().clamp(min=1.0)
+            loss = per_sample_loss.sum() / n_valid
+        else:
+            loss = torch.mean(per_sample_loss)
 
         return self.lambda_temporal * loss
 
@@ -113,7 +124,8 @@ class CAPSLoss:
         actor: nn.Module,
         obs_t: Optional[torch.Tensor] = None,
         obs_t_next: Optional[torch.Tensor] = None,
-        obs_spatial: Optional[torch.Tensor] = None
+        obs_spatial: Optional[torch.Tensor] = None,
+        valid_temporal_mask: Optional[torch.Tensor] = None
     ) -> dict:
         """Compute total CAPS loss.
 
@@ -122,6 +134,7 @@ class CAPSLoss:
             obs_t: Optional observations at time t (for temporal)
             obs_t_next: Optional observations at time t+1 (for temporal)
             obs_spatial: Optional observations for spatial term
+            valid_temporal_mask: Optional mask for valid temporal transitions
 
         Returns:
             Dictionary with:
@@ -135,7 +148,9 @@ class CAPSLoss:
         if self.enabled:
             # Temporal term (requires consecutive observations)
             if obs_t is not None and obs_t_next is not None:
-                temporal_loss = self.compute_temporal(actor, obs_t, obs_t_next)
+                temporal_loss = self.compute_temporal(
+                    actor, obs_t, obs_t_next, valid_temporal_mask
+                )
 
             # Spatial term
             if obs_spatial is not None:
