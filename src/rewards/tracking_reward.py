@@ -102,11 +102,15 @@ class TrackingReward:
             r_vel = 0.0
 
         # Action rate penalty (jerk in action space)
+        # Adaptive: scale by pos_quality so corrections aren't penalized when off-path
         action_change = action - prev_action
-        p_action_rate = self.w_action_rate * np.sum(action_change ** 2)
+        effective_w_action_rate = self.w_action_rate * pos_quality
+        p_action_rate = effective_w_action_rate * np.sum(action_change ** 2)
 
         # Joint velocity penalty (catches null-space jitter)
-        p_joint_vel = self.w_joint_vel * np.sum(joint_vel ** 2)
+        # Also adaptive for consistency
+        effective_w_joint_vel = self.w_joint_vel * pos_quality
+        p_joint_vel = effective_w_joint_vel * np.sum(joint_vel ** 2)
 
         # Total reward
         reward = r_pos + r_ori + r_vel - p_action_rate - p_joint_vel

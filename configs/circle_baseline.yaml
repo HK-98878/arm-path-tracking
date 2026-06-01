@@ -13,7 +13,7 @@ path:
   type: circle
   radius: 0.15  # meters (reduced from 0.3)
   center: [0.4, 0.0, 0.5]  # [x, y, z] - moved to reachable workspace
-  speed: 0.2  # m/s
+  speed: 0.1  # m/s (halved - 0.2 was too fast, robot couldn't recover once behind)
 
 # Control
 control:
@@ -30,8 +30,8 @@ reward:
   w_pos: 1.0
   w_ori: 0.0  # Disabled for Step 1
   w_vel: 0.0  # Disabled for A/B test - isolating position-only convergence
-  w_action_rate: 0.1    # Increased 100x - was too weak to prevent jitter
-  w_joint_vel: 0.001   # Increased 10x
+  w_action_rate: 0.1    # Adaptive penalty - scaled by pos_quality (low when off-path)
+  w_joint_vel: 0.001   # Adaptive penalty - scaled by pos_quality
   # sig_pos=0.15 gives strong gradient at small errors:
   #   at 50mm: 0.89, at 100mm: 0.64, at 150mm: 0.37
   sig_pos: 0.15
