@@ -34,8 +34,8 @@ reward:
   # - progress=1.0 (keeping up): r_vel ≈ 0.76 * w_vel
   # - progress>1.0 (catching up): higher reward, no penalty for going fast
   # - progress<0 (going backwards): negative reward
-  # Not gated by pos_quality - no perpendicular conflict with position reward
-  w_vel: 0.5  # Increased from 0.3 to give velocity signal more weight
+  # GATED by position error - fades to 0 beyond vel_gate_max to focus on correction
+  w_vel: 0.5
   w_action_rate: 0.1    # Adaptive penalty - scaled by pos_quality (low when off-path)
   w_joint_vel: 0.001   # Adaptive penalty - scaled by pos_quality
   # sig_pos=0.15 gives strong gradient at small errors:
@@ -43,6 +43,12 @@ reward:
   sig_pos: 0.15
   sig_ori: 0.1   # Not used yet
   sig_vel: 0.15  # Not used for tangent progress (normalized by target_speed instead)
+  # Linear fallback for position reward - ensures gradient exists at large errors
+  # Beyond this distance, exponential reward is near-zero, linear provides recovery signal
+  pos_linear_fallback_max: 0.5  # 500mm
+  # Gate for tangent progress - beyond this, focus purely on position correction
+  # Prevents policy from just moving along tangent while ignoring position
+  vel_gate_max: 0.3  # 300mm
 
 # PPO
 ppo:

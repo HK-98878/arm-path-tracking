@@ -5,9 +5,9 @@ Implements progressive reward structure:
 - Step 3: Add tangent progress (velocity component along path direction)
 - Step 4: Add orientation
 
-Position/orientation use bounded exponential form to encourage settling.
-Tangent progress uses tanh to reward moving with the path without penalizing
-faster-than-path speeds (needed for catch-up when behind).
+Position uses exponential with linear fallback for large errors (ensures gradient
+always exists for recovery). Tangent progress is gated by position error to prevent
+the policy from just moving along tangent while ignoring position correction.
 """
 
 import numpy as np
@@ -27,7 +27,9 @@ class TrackingReward:
         w_joint_vel: float = 0.001,
         sig_pos: float = 0.02,
         sig_ori: float = 0.1,
-        sig_vel: float = 0.05
+        sig_vel: float = 0.05,
+        pos_linear_fallback_max: float = 0.5,
+        vel_gate_max: float = 0.3
     ):
         """Initialize reward computer.
 
@@ -42,6 +44,11 @@ class TrackingReward:
             sig_pos: Position error standard deviation (meters)
             sig_ori: Orientation error standard deviation (radians)
             sig_vel: Velocity scale for tangent progress normalization (m/s)
+            pos_linear_fallback_max: Max error for linear fallback (meters). Beyond this,
+                                     only minimal position reward. Default 0.5m (500mm).
+            vel_gate_max: Max error for tangent progress reward (meters). Beyond this,
+                          tangent progress is zeroed to focus on position correction.
+                          Default 0.3m (300mm).
 
         Note:
             Step 1 (baseline): w_ori=0, w_vel=0
@@ -57,6 +64,8 @@ class TrackingReward:
         self.sig_pos = sig_pos
         self.sig_ori = sig_ori
         self.sig_vel = sig_vel
+        self.pos_linear_fallback_max = pos_linear_fallback_max
+        self.vel_gate_max = vel_gate_max
 
     def compute(
         self,
@@ -87,8 +96,17 @@ class TrackingReward:
             - p_action_rate: Action rate penalty
             - p_joint_vel: Joint velocity penalty
         """
-        # Position reward: bounded exponential
-        pos_quality = np.exp(-(pos_error / self.sig_pos) ** 2)
+        # Position reward: exponential with linear fallback for large errors
+        # Exponential provides sharp gradient near path, linear ensures gradient exists far from path
+        pos_quality_exp = np.exp(-(pos_error / self.sig_pos) ** 2)
+
+        # Linear fallback: decays from 1 at 0 to 0 at fallback_max
+        # Provides gradient when exponential is near-zero (at large errors)
+        pos_quality_linear = float(np.clip(1.0 - pos_error / self.pos_linear_fallback_max, 0.0, 1.0))
+
+        # Combine: use exponential when close, blend in linear when far
+        # The (1 - pos_quality_exp) factor makes linear contribute more as exponential dies off
+        pos_quality = pos_quality_exp + 0.3 * pos_quality_linear * (1.0 - pos_quality_exp)
         r_pos = self.w_pos * pos_quality
 
         # Orientation reward (if enabled)
@@ -100,15 +118,18 @@ class TrackingReward:
         # Tangent progress reward (if enabled)
         # Uses tanh so faster-than-path speeds give diminishing returns (not penalties)
         # This allows catch-up behavior when behind the path
-        # No pos_quality gating: tangent progress doesn't conflict with position correction
-        # (robot can move toward path AND along tangent simultaneously)
+        # GATED by position error: when far off-path, focus on position correction first
         if self.w_vel > 0 and tangent_progress is not None:
+            # Gate: fades from 1.0 at 0 error to 0.0 at vel_gate_max
+            # This prevents r_vel from dominating when far off-path
+            vel_gate = float(np.clip(1.0 - pos_error / self.vel_gate_max, 0.0, 1.0))
+
             # tanh maps (-inf, inf) -> (-1, 1)
             # progress=1.0 (at path speed) -> tanh(1) ≈ 0.76
             # progress=2.0 (2x path speed) -> tanh(2) ≈ 0.96
             # progress=0 (stationary) -> 0
             # progress=-1 (backwards at path speed) -> tanh(-1) ≈ -0.76
-            r_vel = self.w_vel * np.tanh(tangent_progress)
+            r_vel = self.w_vel * vel_gate * np.tanh(tangent_progress)
         else:
             r_vel = 0.0
 
