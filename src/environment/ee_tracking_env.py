@@ -248,7 +248,7 @@ class EETrackingEnv(gym.Env):
             ee_vel=state_new.ee_lin_vel_world,
             target_pos=target_pos,
             target_quat=None,  # Step 1: no orientation
-            target_vel=None,   # Step 1: no velocity matching
+            target_vel=target_vel,  # Enable velocity matching
             action=action,
             prev_action=self.prev_action,
             joint_vel=state_new.joint_vel
@@ -320,42 +320,118 @@ class EETrackingEnv(gym.Env):
         """Convert policy action to EE twist in world frame.
 
         Args:
-            action: Policy action ∈ [-1, 1]^6
+            action: Policy action ∈ [-1, 1]^6 (in EE frame)
 
         Returns:
             dx_ee_world: (6,) EE twist * dt in world frame
 
         Note:
             Residual-feedforward formulation:
-            dx_ee = feedforward_step + action_scale * action
+            dx_ee = feedforward_step + R_we @ (action_scale * action)
+
+            The policy observes errors in EE frame, so its corrections are
+            in EE frame. We transform them to world frame before adding to
+            the feedforward (which is already in world frame).
         """
-        # Feedforward: tangent step from path geometry
+        # Get current EE rotation for frame transformation
+        ee_quat_mj = self.data.xquat[self.ee_body_id]  # [w,x,y,z] MuJoCo format
+        ee_quat = np.array([ee_quat_mj[1], ee_quat_mj[2], ee_quat_mj[3], ee_quat_mj[0]])
+        R_we = quat_to_matrix(ee_quat)  # world <- ee rotation
+
+        # Feedforward: tangent step from path geometry (world frame)
         v_ref = self.path.velocity(self.s_current)
         feedforward_linear = v_ref * self.dt
 
         # For Step 1: no angular feedforward (no orientation tracking)
         feedforward_angular = np.zeros(3)
 
-        feedforward = np.concatenate([feedforward_linear, feedforward_angular])
+        # Residual: policy output is in EE frame, transform to world frame
+        residual_ee = self.action_scale * action
+        residual_linear_world = R_we @ residual_ee[:3]
+        residual_angular_world = R_we @ residual_ee[3:]
 
-        # Residual: scaled action
-        residual = self.action_scale * action
-
-        # Total twist
-        dx_ee_world = feedforward + residual
+        # Total twist in world frame
+        dx_ee_world = np.concatenate([
+            feedforward_linear + residual_linear_world,
+            feedforward_angular + residual_angular_world
+        ])
 
         return dx_ee_world
 
     def _advance_path_reference(self):
-        """Advance path reference (open-loop).
+        """Advance path reference with monotonic, bounded nearest-point search.
 
-        Note:
-            Uses open-loop advancement: s += ||v|| * dt
-            Can be replaced with "nearest point" (carrot) in future.
+        Key properties:
+        - Monotonic: s only moves forward (or stays), never backward
+        - Bounded: prefers smaller forward step when multiple minima exist
+        - Smooth: uses fine sampling + gradient refinement to reduce jitter
         """
-        v_ref = self.path.velocity(self.s_current)
-        ds = np.linalg.norm(v_ref) * self.dt
-        self.s_current = (self.s_current + ds) % self.path.total_length
+        ee_pos = self.data.xpos[self.ee_body_id]
+
+        # Monotonic forward search only
+        # Small backward allowance (5mm) for minor corrections, but mainly forward
+        backward_allowance = 0.005
+        max_forward = 0.05  # Max 50mm forward per step (at 0.2m/s, dt=0.01 -> 2mm expected)
+        n_samples = 100  # Finer sampling for smoothness
+
+        # Search from (current - small_back) to (current + max_forward)
+        s_min = self.s_current - backward_allowance
+        s_max = self.s_current + max_forward
+
+        # Generate samples WITHOUT wrap-around to keep them contiguous
+        s_samples = np.linspace(s_min, s_max, n_samples)
+
+        # Find nearest point, preferring smaller s (earlier on path) for stability
+        min_dist = float('inf')
+        best_s = self.s_current
+        for s_raw in s_samples:
+            # Wrap for position lookup only
+            s_wrapped = s_raw % self.path.total_length
+            pos = self.path.position(s_wrapped)
+            dist = np.linalg.norm(ee_pos - pos)
+
+            # Prefer this point if closer, or if same distance but smaller s (bounded)
+            if dist < min_dist - 1e-6:  # Clear improvement
+                min_dist = dist
+                best_s = s_raw
+            elif abs(dist - min_dist) < 1e-6 and s_raw < best_s:
+                # Same distance, prefer smaller s (bounded selection)
+                best_s = s_raw
+
+        # Gradient refinement for sub-sample smoothness
+        best_s = self._refine_nearest_s(ee_pos, best_s)
+
+        # Apply small lookahead so reference stays slightly ahead
+        lookahead = 0.005  # 5mm lookahead (reduced from 10mm)
+        self.s_current = (best_s + lookahead) % self.path.total_length
+
+    def _refine_nearest_s(self, ee_pos: np.ndarray, s_coarse: float, n_iters: int = 3) -> float:
+        """Gradient-based refinement of nearest arc length.
+
+        Uses Newton-like steps to find local minimum of distance to path.
+        """
+        s = s_coarse
+        step_size = 0.001  # 1mm initial step for finite differences
+
+        for _ in range(n_iters):
+            s_wrapped = s % self.path.total_length
+
+            # Compute gradient via finite differences
+            pos_center = self.path.position(s_wrapped)
+            pos_plus = self.path.position((s + step_size) % self.path.total_length)
+            pos_minus = self.path.position((s - step_size) % self.path.total_length)
+
+            dist_center = np.linalg.norm(ee_pos - pos_center)
+            dist_plus = np.linalg.norm(ee_pos - pos_plus)
+            dist_minus = np.linalg.norm(ee_pos - pos_minus)
+
+            # Gradient: d(dist)/ds ≈ (dist_plus - dist_minus) / (2 * step_size)
+            grad = (dist_plus - dist_minus) / (2 * step_size)
+
+            # Simple gradient descent step (with damping)
+            s = s - 0.5 * step_size * np.sign(grad)
+
+        return s
 
     def _setup_rendering(self, render_mode: str):
         """Initialize rendering context.

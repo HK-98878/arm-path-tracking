@@ -10,7 +10,9 @@ This script implements the first step of the progressive build order:
 
 import os
 import sys
+import json
 from pathlib import Path
+from datetime import datetime
 import numpy as np
 import torch
 
@@ -23,7 +25,77 @@ from src.paths.circle_path import CirclePath
 from src.rl.ppo import PPO
 from src.utils.config import load_config
 from src.utils.metrics import compute_jitter_metrics, compute_tracking_error_metrics
-from src.utils.normalization import RunningMeanStd
+from src.utils.normalization import RunningMeanStd, RewardNormalizer
+
+
+class CurriculumManager:
+    """Manages curriculum learning stage transitions."""
+
+    def __init__(self, config):
+        self.enabled = getattr(config, 'curriculum', None) is not None and getattr(config.curriculum, 'enabled', False)
+        if not self.enabled:
+            self.current_stage = 0
+            return
+
+        self.stages = list(config.curriculum.stages)
+        self.consecutive_evals = config.curriculum.consecutive_evals
+        self.warmup_steps = config.curriculum.warmup_after_transition
+        self.current_stage = 0
+        self.steps_in_stage = 0
+        self.eval_history = []  # List of pos_error_mean values
+
+    def get_current_params(self):
+        """Get speed and sig_pos for current stage."""
+        if not self.enabled:
+            return None, None
+        stage = self.stages[self.current_stage]
+        return stage['speed'], stage['sig_pos']
+
+    def record_eval(self, pos_error_mean):
+        """Record evaluation result."""
+        if self.enabled:
+            self.eval_history.append(pos_error_mean)
+
+    def should_advance(self):
+        """Check if should advance to next stage."""
+        if not self.enabled or self.current_stage >= len(self.stages) - 1:
+            return False
+
+        stage = self.stages[self.current_stage]
+        threshold = stage.get('advance_threshold')
+        max_steps = stage.get('max_steps', 200000)
+
+        # Threshold met for consecutive evals
+        if threshold and len(self.eval_history) >= self.consecutive_evals:
+            recent = self.eval_history[-self.consecutive_evals:]
+            if all(e < threshold for e in recent):
+                return True
+
+        # Fallback: max steps in stage
+        if self.steps_in_stage >= max_steps:
+            return True
+
+        return False
+
+    def advance(self):
+        """Advance to next stage. Returns new (speed, sig_pos)."""
+        self.current_stage += 1
+        self.steps_in_stage = 0
+        self.eval_history = []
+        return self.get_current_params()
+
+    def step(self, n=1):
+        """Increment step counter."""
+        if self.enabled:
+            self.steps_in_stage += n
+
+
+def check_for_spike(current_error, previous_error, threshold_ratio=2.0):
+    """Detect if error has spiked dramatically."""
+    if previous_error is not None and previous_error > 0:
+        if current_error > previous_error * threshold_ratio:
+            return True
+    return False
 
 
 def make_env(config):
@@ -40,6 +112,45 @@ def make_env(config):
         model_path=str(project_root / config.env.model_path),
         path=path,
         reward_config=config.reward.to_dict(),
+        action_scale=np.array(config.control.action_scale),
+        dt=config.env.dt,
+        max_episode_steps=config.env.max_episode_steps,
+        ee_body_name=config.env.ee_body_name,
+        render_mode=None,  # Headless
+        dls_config=config.control.dls.to_dict() if hasattr(config.control, 'dls') else None
+    )
+
+    return env
+
+
+def make_env_with_speed(config, speed, sig_pos=None):
+    """Create environment with specified path speed (for curriculum transitions).
+
+    Args:
+        config: Configuration object
+        speed: Path speed to use (m/s)
+        sig_pos: Optional sig_pos override for reward function
+
+    Returns:
+        EETrackingEnv instance
+    """
+    # Create path with overridden speed
+    path = CirclePath(
+        radius=config.path.radius,
+        center=np.array(config.path.center),
+        speed=speed
+    )
+
+    # Build reward config with optional sig_pos override
+    reward_config = config.reward.to_dict()
+    if sig_pos is not None:
+        reward_config['sig_pos'] = sig_pos
+
+    # Create environment
+    env = EETrackingEnv(
+        model_path=str(project_root / config.env.model_path),
+        path=path,
+        reward_config=reward_config,
         action_scale=np.array(config.control.action_scale),
         dt=config.env.dt,
         max_episode_steps=config.env.max_episode_steps,
@@ -69,6 +180,14 @@ def evaluate(env, agent, obs_rms, num_episodes=5):
     all_positions = []
     all_targets = []
 
+    # Reward component accumulators
+    all_r_pos = []
+    all_r_ori = []
+    all_r_vel = []
+    all_p_action_rate = []
+    all_p_joint_vel = []
+    all_pos_errors = []
+
     for _ in range(num_episodes):
         obs, _ = env.reset()
         obs = obs_rms.normalize(obs)  # Normalize observation
@@ -79,6 +198,13 @@ def evaluate(env, agent, obs_rms, num_episodes=5):
         episode_positions = []
         episode_targets = []
 
+        # Per-episode reward components
+        ep_r_pos = []
+        ep_r_vel = []
+        ep_p_action_rate = []
+        ep_p_joint_vel = []
+        ep_pos_errors = []
+
         while not done:
             action, _, _ = agent.select_action(obs, deterministic=True)
 
@@ -88,8 +214,8 @@ def evaluate(env, agent, obs_rms, num_episodes=5):
             # Get current state for tracking
             state = env._get_robot_state()
             target_pos = env.path.position(env.s_current)
-            episode_positions.append(state.ee_pos_world)
-            episode_targets.append(target_pos)
+            episode_positions.append(state.ee_pos_world.copy())
+            episode_targets.append(target_pos.copy())
 
             obs, reward, terminated, truncated, info = env.step(action)
             obs = obs_rms.normalize(obs)  # Normalize observation
@@ -98,23 +224,46 @@ def evaluate(env, agent, obs_rms, num_episodes=5):
             episode_reward += reward
             episode_length += 1
 
+            # Collect reward components from info
+            ep_r_pos.append(info.get('r_pos', 0))
+            ep_r_vel.append(info.get('r_vel', 0))
+            ep_p_action_rate.append(info.get('p_action_rate', 0))
+            ep_p_joint_vel.append(info.get('p_joint_vel', 0))
+            ep_pos_errors.append(info.get('pos_error', 0))
+
         episode_rewards.append(episode_reward)
         episode_lengths.append(episode_length)
         all_actions.append(np.array(episode_actions))
         all_positions.append(np.array(episode_positions))
         all_targets.append(np.array(episode_targets))
 
+        all_r_pos.append(np.mean(ep_r_pos))
+        all_r_vel.append(np.mean(ep_r_vel))
+        all_p_action_rate.append(np.mean(ep_p_action_rate))
+        all_p_joint_vel.append(np.mean(ep_p_joint_vel))
+        all_pos_errors.extend(ep_pos_errors)
+
     # Aggregate metrics
     metrics = {
-        'mean_episode_reward': np.mean(episode_rewards),
-        'std_episode_reward': np.std(episode_rewards),
-        'mean_episode_length': np.mean(episode_lengths),
+        'mean_episode_reward': float(np.mean(episode_rewards)),
+        'std_episode_reward': float(np.std(episode_rewards)),
+        'mean_episode_length': float(np.mean(episode_lengths)),
+        # Reward components (averaged across episodes)
+        'mean_r_pos': float(np.mean(all_r_pos)),
+        'mean_r_vel': float(np.mean(all_r_vel)),
+        'mean_p_action_rate': float(np.mean(all_p_action_rate)),
+        'mean_p_joint_vel': float(np.mean(all_p_joint_vel)),
+        # Position error statistics
+        'pos_error_mean': float(np.mean(all_pos_errors)),
+        'pos_error_std': float(np.std(all_pos_errors)),
+        'pos_error_max': float(np.max(all_pos_errors)),
+        'pos_error_p90': float(np.percentile(all_pos_errors, 90)),
     }
 
     # Jitter metrics (from first episode)
     if len(all_actions) > 0:
         jitter = compute_jitter_metrics(all_actions[0], env.dt)
-        metrics.update({f'jitter_{k}': v for k, v in jitter.items()})
+        metrics.update({f'jitter_{k}': float(v) for k, v in jitter.items()})
 
     # Tracking error metrics (from first episode)
     if len(all_positions) > 0 and len(all_targets) > 0:
@@ -122,7 +271,7 @@ def evaluate(env, agent, obs_rms, num_episodes=5):
             all_positions[0],
             all_targets[0]
         )
-        metrics.update({f'tracking_{k}': v for k, v in tracking.items()})
+        metrics.update({f'tracking_{k}': float(v) for k, v in tracking.items()})
 
     return metrics
 
@@ -144,9 +293,39 @@ def train(config):
     output_dir = Path(config.logging.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Initialize training log
+    training_log = {
+        'start_time': datetime.now().isoformat(),
+        'config': {
+            'reward': config.reward.to_dict(),
+            'ppo': config.ppo.to_dict(),
+            'path': config.path.to_dict(),
+            'training': config.training.to_dict(),
+            'caps': config.caps.to_dict() if hasattr(config, 'caps') else {'enabled': False},
+        },
+        'evaluations': [],
+        'training_updates': [],
+    }
+    log_path = output_dir / 'training_log.json'
+
+    def save_log():
+        with open(log_path, 'w') as f:
+            json.dump(training_log, f, indent=2)
+
     # Create environment
     print("Creating environment...")
     env = make_env(config)
+
+    # Initialize curriculum manager
+    curriculum = CurriculumManager(config)
+    if curriculum.enabled:
+        speed, sig_pos = curriculum.get_current_params()
+        env.close()
+        env = make_env_with_speed(config, speed, sig_pos)
+        print(f"  Curriculum enabled - Stage 0: speed={speed} m/s, sig_pos={sig_pos}")
+    else:
+        print("  Curriculum disabled - using config path speed")
+
     print(f"  Observation space: {env.observation_space.shape}")
     print(f"  Action space: {env.action_space.shape}")
 
@@ -178,7 +357,12 @@ def train(config):
     print(f"  Total updates: {config.training.total_timesteps // config.ppo.n_steps}")
 
     obs_rms = RunningMeanStd(shape=env.observation_space.shape)
-    print(f"  Using running observation normalization")
+    reward_normalizer = RewardNormalizer(gamma=config.ppo.gamma)
+
+    # Warmup period for normalization (freeze after this)
+    warmup_steps = getattr(config.training, 'normalization_warmup', 10000)
+    print(f"  Using running observation normalization (freeze after {warmup_steps} steps)")
+    print(f"  Using reward normalization")
 
     # Training loop
     obs, _ = env.reset()
@@ -187,8 +371,23 @@ def train(config):
     episode_reward = 0
     episode_length = 0
     num_episodes = 0
+    last_update_metrics = None
+
+    # Spike detection tracking
+    prev_eval_error = None
+
+    # Curriculum warmup tracking (next timestep when normalization should freeze)
+    warmup_end_step = warmup_steps if not curriculum.enabled else warmup_steps
 
     for timestep in range(config.training.total_timesteps):
+        # Curriculum step counter
+        curriculum.step()
+        # Freeze normalization after warmup
+        if timestep == warmup_end_step and not obs_rms.frozen:
+            obs_rms.freeze()
+            reward_normalizer.freeze()
+            print(f"\n  [Step {timestep}] Normalization frozen.")
+
         # Select action
         action, value, log_prob = agent.select_action(obs)
 
@@ -196,11 +395,14 @@ def train(config):
         next_obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
 
+        # Normalize reward
+        reward_normalized = reward_normalizer.normalize(reward, done)
+
         obs_rms.update(next_obs)
         next_obs_normalized = obs_rms.normalize(next_obs)
 
-        # Store transition
-        agent.store_transition(obs, action, reward, value, log_prob, done)
+        # Store transition with normalized reward
+        agent.store_transition(obs, action, reward_normalized, value, log_prob, done)
 
         episode_reward += reward
         episode_length += 1
@@ -220,8 +422,9 @@ def train(config):
         # Update policy
         if (timestep + 1) % config.ppo.n_steps == 0:
             update_metrics = agent.update(obs, done)
+            last_update_metrics = update_metrics  # Store for logging at eval time
 
-            # Log training metrics
+            # Console log (sparse)
             if (timestep + 1) % config.training.log_frequency == 0:
                 print(f"\nTimestep {timestep + 1:,} / {config.training.total_timesteps:,}")
                 print(f"  Episodes: {num_episodes}")
@@ -245,18 +448,82 @@ def train(config):
             print(f"  Max position error: {eval_metrics['tracking_max_position_error']*1000:.2f} mm")
             print(f"  Jitter (integrated squared jerk): {eval_metrics['jitter_integrated_squared_jerk']:.6f}")
             print(f"  High-freq power ratio: {eval_metrics['jitter_high_freq_power_ratio']:.4f}")
+            print(f"  Reward components: r_pos={eval_metrics['mean_r_pos']:.3f}, r_vel={eval_metrics['mean_r_vel']:.3f}")
+            print(f"  Penalties: action_rate={eval_metrics['mean_p_action_rate']:.2e}, joint_vel={eval_metrics['mean_p_joint_vel']:.2e}")
+
+            # Log to JSON
+            eval_entry = {'timestep': timestep + 1, **eval_metrics}
+            training_log['evaluations'].append(eval_entry)
+
+            # Log training metrics at eval time (every 10k instead of 256k)
+            if last_update_metrics is not None:
+                training_log['training_updates'].append({
+                    'timestep': timestep + 1,
+                    'episodes': num_episodes,
+                    'policy_loss': float(last_update_metrics['policy_loss']),
+                    'value_loss': float(last_update_metrics['value_loss']),
+                    'entropy': float(-last_update_metrics['entropy_loss']),
+                    'approx_kl': float(last_update_metrics['approx_kl']),
+                    'clip_fraction': float(last_update_metrics['clip_fraction']),
+                    'caps_loss': float(last_update_metrics.get('caps_loss', 0.0)),
+                })
+            save_log()
+
+            # Spike detection and curriculum management
+            pos_error_mean = eval_metrics['pos_error_mean']
+            curriculum.record_eval(pos_error_mean)
+
+            # Spike detection
+            if check_for_spike(pos_error_mean, prev_eval_error):
+                print(f"\n  WARNING: Error spiked from {prev_eval_error*1000:.1f}mm to {pos_error_mean*1000:.1f}mm")
+                spike_path = output_dir / f"spike_detected_{timestep + 1}.pt"
+                agent.save(str(spike_path), obs_rms=obs_rms, reward_normalizer=reward_normalizer)
+                print(f"  Saved spike checkpoint: {spike_path}")
+            prev_eval_error = pos_error_mean
+
+            # Curriculum advancement check
+            if curriculum.should_advance():
+                new_speed, new_sig_pos = curriculum.advance()
+                print(f"\n{'='*60}")
+                print(f"CURRICULUM: Advancing to Stage {curriculum.current_stage}")
+                print(f"  speed: {new_speed} m/s, sig_pos: {new_sig_pos}")
+                print('='*60)
+
+                # Recreate environment with new speed and sig_pos
+                env.close()
+                env = make_env_with_speed(config, new_speed, new_sig_pos)
+
+                # Unfreeze normalizers to allow gradual adaptation (don't reset - too disruptive)
+                obs_rms.unfreeze()
+                reward_normalizer.unfreeze()
+
+                # Reset observation
+                obs, _ = env.reset()
+                obs_rms.update(obs)
+                obs = obs_rms.normalize(obs)
+
+                # Set new warmup end point (normalizers unfrozen for gradual adaptation)
+                warmup_end_step = timestep + curriculum.warmup_steps
+                print(f"  Normalizers unfrozen. Will re-freeze at step {warmup_end_step}")
 
         # Save checkpoint
         if (timestep + 1) % config.training.save_frequency == 0:
             checkpoint_path = output_dir / f"checkpoint_{timestep + 1}.pt"
-            agent.save(str(checkpoint_path), obs_rms=obs_rms)
+            agent.save(str(checkpoint_path), obs_rms=obs_rms, reward_normalizer=reward_normalizer)
             print(f"\n  Saved checkpoint: {checkpoint_path}")
 
     # Final save
     final_path = output_dir / "final_model.pt"
-    agent.save(str(final_path), obs_rms=obs_rms)
+    agent.save(str(final_path), obs_rms=obs_rms, reward_normalizer=reward_normalizer)
+
+    # Save final log
+    training_log['end_time'] = datetime.now().isoformat()
+    training_log['total_episodes'] = num_episodes
+    save_log()
+
     print(f"\n{'='*60}")
     print(f"Training complete! Final model saved to: {final_path}")
+    print(f"Training log saved to: {log_path}")
     print('='*60)
 
     env.close()

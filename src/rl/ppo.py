@@ -174,16 +174,31 @@ class PPO:
         }
 
         # Multiple epochs of optimization
+        include_next_obs = self.caps_loss.enabled and self.caps_loss.lambda_temporal > 0
         for epoch in range(self.n_epochs):
-            for batch in self.buffer.get(self.batch_size):
-                (
-                    obs_batch,
-                    actions_batch,
-                    old_values_batch,
-                    old_log_probs_batch,
-                    advantages_batch,
-                    returns_batch
-                ) = batch
+            for batch in self.buffer.get(self.batch_size, include_next_obs=include_next_obs):
+                if include_next_obs:
+                    (
+                        obs_batch,
+                        actions_batch,
+                        old_values_batch,
+                        old_log_probs_batch,
+                        advantages_batch,
+                        returns_batch,
+                        next_obs_batch,
+                        valid_temporal_mask
+                    ) = batch
+                else:
+                    (
+                        obs_batch,
+                        actions_batch,
+                        old_values_batch,
+                        old_log_probs_batch,
+                        advantages_batch,
+                        returns_batch
+                    ) = batch
+                    next_obs_batch = None
+                    valid_temporal_mask = None
 
                 # Evaluate actions
                 new_log_probs, entropy, new_values = \
@@ -215,11 +230,12 @@ class PPO:
                 # CAPS loss (if enabled)
                 caps_loss = torch.tensor(0.0, device=self.device)
                 if self.caps_loss.enabled:
-                    # For temporal: need consecutive observations
-                    # For simplicity in Step 1, just use spatial term
                     caps_dict = self.caps_loss.compute(
                         self.actor_critic.actor,
-                        obs_spatial=obs_batch
+                        obs_t=obs_batch if include_next_obs else None,
+                        obs_t_next=next_obs_batch,
+                        obs_spatial=obs_batch,
+                        valid_temporal_mask=valid_temporal_mask
                     )
                     caps_loss = caps_dict['caps_loss']
 
@@ -263,12 +279,13 @@ class PPO:
 
         return metrics
 
-    def save(self, path: str, obs_rms=None):
+    def save(self, path: str, obs_rms=None, reward_normalizer=None):
         """Save model checkpoint.
 
         Args:
             path: Path to save checkpoint
             obs_rms: Optional observation normalization stats
+            reward_normalizer: Optional reward normalizer
         """
         os.makedirs(os.path.dirname(path), exist_ok=True)
         checkpoint = {
@@ -281,15 +298,23 @@ class PPO:
             checkpoint['obs_rms_mean'] = obs_rms.mean
             checkpoint['obs_rms_var'] = obs_rms.var
             checkpoint['obs_rms_count'] = obs_rms.count
+            checkpoint['obs_rms_frozen'] = obs_rms.frozen
+
+        if reward_normalizer is not None:
+            checkpoint['reward_rms_mean'] = reward_normalizer.ret_rms.mean
+            checkpoint['reward_rms_var'] = reward_normalizer.ret_rms.var
+            checkpoint['reward_rms_count'] = reward_normalizer.ret_rms.count
+            checkpoint['reward_rms_frozen'] = reward_normalizer.ret_rms.frozen
 
         torch.save(checkpoint, path)
 
-    def load(self, path: str, obs_rms=None):
+    def load(self, path: str, obs_rms=None, reward_normalizer=None):
         """Load model checkpoint.
 
         Args:
             path: Path to checkpoint
             obs_rms: Optional observation normalization stats to restore
+            reward_normalizer: Optional reward normalizer to restore
         """
         checkpoint = torch.load(path, map_location=self.device)
         self.actor_critic.load_state_dict(checkpoint['actor_critic'])
@@ -300,3 +325,10 @@ class PPO:
             obs_rms.mean = checkpoint['obs_rms_mean']
             obs_rms.var = checkpoint['obs_rms_var']
             obs_rms.count = checkpoint['obs_rms_count']
+            obs_rms.frozen = checkpoint.get('obs_rms_frozen', False)
+
+        if reward_normalizer is not None and 'reward_rms_mean' in checkpoint:
+            reward_normalizer.ret_rms.mean = checkpoint['reward_rms_mean']
+            reward_normalizer.ret_rms.var = checkpoint['reward_rms_var']
+            reward_normalizer.ret_rms.count = checkpoint['reward_rms_count']
+            reward_normalizer.ret_rms.frozen = checkpoint.get('reward_rms_frozen', False)

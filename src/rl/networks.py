@@ -44,7 +44,7 @@ class Actor(nn.Module):
         self.mean = layer_init(nn.Linear(prev_size, action_dim), std=0.01)
 
         # Log std (learned parameter, not state-dependent)
-        self.log_std = nn.Parameter(torch.zeros(action_dim))
+        self.log_std = nn.Parameter(torch.full((action_dim,), -1.0))
 
     def forward(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Forward pass.
@@ -73,22 +73,25 @@ class Actor(nn.Module):
 
         Returns:
             Tuple of (action, log_prob, entropy)
+
+        Note:
+            Uses tanh squashing with proper Jacobian correction for log_prob.
+            log_prob(tanh(x)) = log_prob(x) - sum(log(1 - tanh(x)^2))
         """
         mean, std = self.forward(obs)
+        dist = Normal(mean, std)
+        entropy = dist.entropy().sum(dim=-1)
 
         if deterministic:
-            action = mean
-            dist = Normal(mean, std)
-            log_prob = dist.log_prob(action).sum(dim=-1)
-            entropy = dist.entropy().sum(dim=-1)
+            x = mean  # Pre-tanh value
         else:
-            dist = Normal(mean, std)
-            action = dist.sample()
-            log_prob = dist.log_prob(action).sum(dim=-1)
-            entropy = dist.entropy().sum(dim=-1)
+            x = dist.sample()  # Pre-tanh sample
 
-        # Clip to [-1, 1] (action space bounds)
-        action = torch.tanh(action)
+        action = torch.tanh(x)
+        # Log prob with Jacobian correction for tanh squashing
+        # d/dx tanh(x) = 1 - tanh(x)^2, so log|det(Jacobian)| = sum(log(1 - tanh(x)^2))
+        log_prob = dist.log_prob(x).sum(dim=-1)
+        log_prob = log_prob - torch.sum(torch.log(1 - action.pow(2) + 1e-6), dim=-1)
 
         return action, log_prob, entropy
 
@@ -101,18 +104,24 @@ class Actor(nn.Module):
 
         Args:
             obs: (batch, obs_dim) observations
-            actions: (batch, action_dim) actions to evaluate
+            actions: (batch, action_dim) tanh-squashed actions to evaluate
 
         Returns:
             Tuple of (log_prob, entropy)
+
+        Note:
+            Actions are tanh-squashed, so we apply atanh to recover pre-tanh
+            values, then compute log_prob with Jacobian correction.
         """
         mean, std = self.forward(obs)
         dist = Normal(mean, std)
-
-        # Inverse tanh to get pre-tanh action
-        # For simplicity, assume actions are already in correct space
-        log_prob = dist.log_prob(actions).sum(dim=-1)
         entropy = dist.entropy().sum(dim=-1)
+
+        actions_clamped = torch.clamp(actions, -0.9999, 0.9999)
+        x = torch.atanh(actions_clamped)
+
+        log_prob = dist.log_prob(x).sum(dim=-1)
+        log_prob = log_prob - torch.sum(torch.log(1 - actions.pow(2) + 1e-6), dim=-1)
 
         return log_prob, entropy
 

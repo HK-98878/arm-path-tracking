@@ -122,15 +122,18 @@ class RolloutBuffer:
 
     def get(
         self,
-        batch_size: int
+        batch_size: int,
+        include_next_obs: bool = False
     ) -> Generator[Tuple[torch.Tensor, ...], None, None]:
         """Generate batches for training.
 
         Args:
             batch_size: Batch size
+            include_next_obs: Whether to include next observations for temporal CAPS
 
         Yields:
             Tuples of (obs, actions, values, log_probs, advantages, returns)
+            If include_next_obs: also includes (next_obs, valid_temporal_mask)
         """
         size = self.buffer_size if self.full else self.pos
 
@@ -142,12 +145,27 @@ class RolloutBuffer:
         indices = np.arange(size)
         np.random.shuffle(indices)
 
+        # For temporal CAPS: precompute next observations and validity mask
+        if include_next_obs:
+            # Next obs is obs[i+1], but invalid for last step or episode boundaries
+            next_observations = np.zeros_like(self.observations[:size])
+            valid_temporal = np.ones(size, dtype=np.float32)
+
+            for i in range(size - 1):
+                if self.dones[i]:
+                    # Episode ended, next obs is from different episode
+                    valid_temporal[i] = 0.0
+                else:
+                    next_observations[i] = self.observations[i + 1]
+            # Last step has no next obs
+            valid_temporal[size - 1] = 0.0
+
         # Create batches
         for start_idx in range(0, size, batch_size):
             end_idx = min(start_idx + batch_size, size)
             batch_indices = indices[start_idx:end_idx]
 
-            yield (
+            batch = (
                 torch.from_numpy(self.observations[batch_indices]).to(self.device),
                 torch.from_numpy(self.actions[batch_indices]).to(self.device),
                 torch.from_numpy(self.values[batch_indices]).to(self.device),
@@ -155,6 +173,14 @@ class RolloutBuffer:
                 torch.from_numpy(advantages[batch_indices]).to(self.device),
                 torch.from_numpy(self.returns[batch_indices]).to(self.device),
             )
+
+            if include_next_obs:
+                batch = batch + (
+                    torch.from_numpy(next_observations[batch_indices]).to(self.device),
+                    torch.from_numpy(valid_temporal[batch_indices]).to(self.device),
+                )
+
+            yield batch
 
     def reset(self):
         """Reset buffer."""
