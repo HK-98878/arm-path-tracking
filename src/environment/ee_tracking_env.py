@@ -187,6 +187,9 @@ class EETrackingEnv(gym.Env):
         self.step_count = 0
         self.prev_action = np.zeros(6, dtype=np.float32)
 
+        # Initialize ideal path position (advances at constant speed, caps s_current)
+        self.s_ideal = self.s_current
+
         # Get initial observation
         state = self._get_robot_state()
         obs = self.obs_builder.build(state, self.path, self.s_current)
@@ -234,25 +237,22 @@ class EETrackingEnv(gym.Env):
         self._advance_path_reference()
 
         # Compute arc-length progress (ds/dt normalized by target speed)
+        # s_current is unwrapped, so ds is simply the difference (no wrap handling needed)
         ds = self.s_current - s_previous
-        # Handle wrap-around for closed paths (e.g., circle)
-        if ds < -self.path.total_length / 2:
-            ds += self.path.total_length
-        elif ds > self.path.total_length / 2:
-            ds -= self.path.total_length
-        target_speed = np.linalg.norm(self.path.velocity(self.s_current))
+        s_wrapped = self.s_current % self.path.total_length
+        target_speed = np.linalg.norm(self.path.velocity(s_wrapped))
         arc_progress = ds / (self.dt * target_speed) if target_speed > 1e-8 else 0.0
 
         # Get new state
         state_new = self._get_robot_state()
         state_new.prev_action = action  # Update previous action
 
-        # Compute observation
-        obs = self.obs_builder.build(state_new, self.path, self.s_current)
+        # Compute observation (use wrapped s for path lookups)
+        obs = self.obs_builder.build(state_new, self.path, s_wrapped)
 
         # Compute reward
-        target_pos = self.path.position(self.s_current)
-        target_vel = self.path.velocity(self.s_current)
+        target_pos = self.path.position(s_wrapped)
+        target_vel = self.path.velocity(s_wrapped)
 
         reward_dict = self.reward_computer.compute_from_state(
             ee_pos=state_new.ee_pos_world,
@@ -280,7 +280,7 @@ class EETrackingEnv(gym.Env):
         # Info
         pos_error = np.linalg.norm(state_new.ee_pos_world - target_pos)
         info = {
-            's': self.s_current,
+            's': s_wrapped,  # Report wrapped arc length
             'step': self.step_count,
             'pos_error': pos_error,
             **reward_dict,  # Include reward components
@@ -352,7 +352,8 @@ class EETrackingEnv(gym.Env):
         R_we = quat_to_matrix(ee_quat)  # world <- ee rotation
 
         # Feedforward: tangent step from path geometry (world frame)
-        v_ref = self.path.velocity(self.s_current)
+        s_wrapped = self.s_current % self.path.total_length
+        v_ref = self.path.velocity(s_wrapped)
         feedforward_linear = v_ref * self.dt
 
         # For Step 1: no angular feedforward (no orientation tracking)
@@ -372,29 +373,37 @@ class EETrackingEnv(gym.Env):
         return dx_ee_world
 
     def _advance_path_reference(self):
-        """Advance path reference with monotonic, bounded nearest-point search.
+        """Advance path reference with bounded nearest-point search.
 
         Key properties:
-        - Monotonic: s only moves forward (or stays), never backward
-        - Bounded: prefers smaller forward step when multiple minima exist
-        - Smooth: uses fine sampling + gradient refinement to reduce jitter
+        - s_ideal advances at constant path speed (the "clock")
+        - s_current tracks nearest point but can't exceed s_ideal (no lapping)
+        - When behind: target waits for EE (forgiving for learning)
+        - When caught up: target moves at constant speed (proper tracking)
+
+        Note: s_ideal and s_current are tracked as unwrapped values (can exceed
+        total_length for multiple laps). Only wrap when accessing path geometry.
         """
         ee_pos = self.data.xpos[self.ee_body_id]
 
-        # Monotonic forward search only
-        # Small backward allowance (5mm) for minor corrections, but mainly forward
+        # Advance ideal position at constant path speed (unwrapped)
+        s_ideal_wrapped = self.s_ideal % self.path.total_length
+        target_speed = np.linalg.norm(self.path.velocity(s_ideal_wrapped))
+        self.s_ideal = self.s_ideal + target_speed * self.dt
+
+        # Nearest-point search (allows catching up when behind)
         backward_allowance = 0.005
-        max_forward = 0.05  # Max 50mm forward per step (at 0.2m/s, dt=0.01 -> 2mm expected)
-        n_samples = 100  # Finer sampling for smoothness
+        max_forward = 0.05  # Max 50mm forward per step
+        n_samples = 100
 
         # Search from (current - small_back) to (current + max_forward)
+        # Use unwrapped s_current for search bounds
         s_min = self.s_current - backward_allowance
         s_max = self.s_current + max_forward
 
-        # Generate samples WITHOUT wrap-around to keep them contiguous
         s_samples = np.linspace(s_min, s_max, n_samples)
 
-        # Find nearest point, preferring smaller s (earlier on path) for stability
+        # Find nearest point, preferring smaller s for stability
         min_dist = float('inf')
         best_s = self.s_current
         for s_raw in s_samples:
@@ -403,20 +412,22 @@ class EETrackingEnv(gym.Env):
             pos = self.path.position(s_wrapped)
             dist = np.linalg.norm(ee_pos - pos)
 
-            # Prefer this point if closer, or if same distance but smaller s (bounded)
-            if dist < min_dist - 1e-6:  # Clear improvement
+            if dist < min_dist - 1e-6:
                 min_dist = dist
                 best_s = s_raw
             elif abs(dist - min_dist) < 1e-6 and s_raw < best_s:
-                # Same distance, prefer smaller s (bounded selection)
                 best_s = s_raw
 
-        # Gradient refinement for sub-sample smoothness
+        # Gradient refinement
         best_s = self._refine_nearest_s(ee_pos, best_s)
 
-        # Apply small lookahead so reference stays slightly ahead
-        lookahead = 0.005  # 5mm lookahead (reduced from 10mm)
-        self.s_current = (best_s + lookahead) % self.path.total_length
+        # Apply lookahead
+        lookahead = 0.005
+        s_candidate = best_s + lookahead
+
+        # KEY: Clip to s_ideal - can't advance beyond the "clock"
+        # Both are unwrapped, so comparison is valid across laps
+        self.s_current = min(s_candidate, self.s_ideal)
 
     def _refine_nearest_s(self, ee_pos: np.ndarray, s_coarse: float, n_iters: int = 3) -> float:
         """Gradient-based refinement of nearest arc length.
