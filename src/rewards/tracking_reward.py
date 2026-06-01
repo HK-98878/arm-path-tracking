@@ -2,10 +2,12 @@
 
 Implements progressive reward structure:
 - Step 1: Position only
-- Step 3: Add velocity matching
+- Step 3: Add tangent progress (velocity component along path direction)
 - Step 4: Add orientation
 
-All rewards use bounded exponential form to encourage settling.
+Position/orientation use bounded exponential form to encourage settling.
+Tangent progress uses tanh to reward moving with the path without penalizing
+faster-than-path speeds (needed for catch-up when behind).
 """
 
 import numpy as np
@@ -32,16 +34,18 @@ class TrackingReward:
         Args:
             w_pos: Weight for position reward
             w_ori: Weight for orientation reward (0 for Step 1)
-            w_vel: Weight for velocity matching reward (0 for Step 1-2)
+            w_vel: Weight for tangent progress reward (0 for Step 1-2)
+                   Rewards velocity component along path tangent direction.
+                   Uses tanh so faster-than-path speeds aren't penalized (allows catch-up).
             w_action_rate: Weight for action rate penalty
             w_joint_vel: Weight for joint velocity penalty
             sig_pos: Position error standard deviation (meters)
             sig_ori: Orientation error standard deviation (radians)
-            sig_vel: Velocity error standard deviation (m/s)
+            sig_vel: Velocity scale for tangent progress normalization (m/s)
 
         Note:
             Step 1 (baseline): w_ori=0, w_vel=0
-            Step 3 (velocity): w_vel > 0
+            Step 3 (tangent progress): w_vel > 0
             Step 4 (orientation): w_ori > 0
         """
         self.w_pos = w_pos
@@ -61,7 +65,7 @@ class TrackingReward:
         prev_action: np.ndarray,
         joint_vel: np.ndarray,
         ori_error: Optional[float] = None,
-        vel_error: Optional[float] = None
+        tangent_progress: Optional[float] = None
     ) -> dict:
         """Compute reward and its components.
 
@@ -71,14 +75,15 @@ class TrackingReward:
             prev_action: Previous action (6,)
             joint_vel: Joint velocities (n,)
             ori_error: Optional geodesic orientation error (radians)
-            vel_error: Optional L2 velocity error (m/s)
+            tangent_progress: Optional normalized velocity along tangent (ee_vel · tangent_dir / target_speed)
+                              Positive = moving with path, negative = moving against
 
         Returns:
             Dictionary with:
             - reward: Total reward
             - r_pos: Position reward component
             - r_ori: Orientation reward component
-            - r_vel: Velocity matching reward component
+            - r_vel: Tangent progress reward component
             - p_action_rate: Action rate penalty
             - p_joint_vel: Joint velocity penalty
         """
@@ -92,12 +97,18 @@ class TrackingReward:
         else:
             r_ori = 0.0
 
-        # Velocity matching reward (if enabled)
-        # Scale by pos_quality: when off-path, focus on position correction;
-        # when on-path, velocity matching kicks in to prevent overshoot
-        if self.w_vel > 0 and vel_error is not None:
-            effective_w_vel = self.w_vel * pos_quality
-            r_vel = effective_w_vel * np.exp(-(vel_error / self.sig_vel) ** 2)
+        # Tangent progress reward (if enabled)
+        # Uses tanh so faster-than-path speeds give diminishing returns (not penalties)
+        # This allows catch-up behavior when behind the path
+        # No pos_quality gating: tangent progress doesn't conflict with position correction
+        # (robot can move toward path AND along tangent simultaneously)
+        if self.w_vel > 0 and tangent_progress is not None:
+            # tanh maps (-inf, inf) -> (-1, 1)
+            # progress=1.0 (at path speed) -> tanh(1) ≈ 0.76
+            # progress=2.0 (2x path speed) -> tanh(2) ≈ 0.96
+            # progress=0 (stationary) -> 0
+            # progress=-1 (backwards at path speed) -> tanh(-1) ≈ -0.76
+            r_vel = self.w_vel * np.tanh(tangent_progress)
         else:
             r_vel = 0.0
 
@@ -144,7 +155,7 @@ class TrackingReward:
             ee_vel: Current EE linear velocity (3,)
             target_pos: Target position (3,)
             target_quat: Optional target quaternion (4,)
-            target_vel: Optional target velocity (3,)
+            target_vel: Optional target velocity (3,) - path tangent velocity
             action: Current action (6,)
             prev_action: Previous action (6,)
             joint_vel: Joint velocities (n,)
@@ -160,10 +171,19 @@ class TrackingReward:
         if self.w_ori > 0 and target_quat is not None:
             ori_error = geodesic_angle(ee_quat, target_quat)
 
-        # Velocity error (if needed)
-        vel_error = None
+        # Tangent progress (if needed)
+        # Compute velocity component along path tangent, normalized by target speed
+        tangent_progress = None
         if self.w_vel > 0 and target_vel is not None:
-            vel_error = np.linalg.norm(ee_vel - target_vel)
+            target_speed = np.linalg.norm(target_vel)
+            if target_speed > 1e-8:
+                tangent_dir = target_vel / target_speed
+                # Dot product gives velocity component along tangent
+                progress = np.dot(ee_vel, tangent_dir)
+                # Normalize by target speed so progress=1.0 means "keeping up"
+                tangent_progress = progress / target_speed
+            else:
+                tangent_progress = 0.0
 
         return self.compute(
             pos_error=pos_error,
@@ -171,7 +191,7 @@ class TrackingReward:
             prev_action=prev_action,
             joint_vel=joint_vel,
             ori_error=ori_error,
-            vel_error=vel_error
+            tangent_progress=tangent_progress
         )
 
     def max_reward(self) -> float:
@@ -179,6 +199,10 @@ class TrackingReward:
 
         Returns:
             Maximum reward value
+
+        Note:
+            For tangent progress, max is approached asymptotically (tanh -> 1).
+            At path speed (progress=1.0), r_vel = w_vel * tanh(1) ≈ 0.76 * w_vel.
         """
         return self.w_pos + self.w_ori + self.w_vel
 

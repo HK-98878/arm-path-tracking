@@ -316,7 +316,7 @@ class PPO:
             obs_rms: Optional observation normalization stats to restore
             reward_normalizer: Optional reward normalizer to restore
         """
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self.device,weights_only=False)
         self.actor_critic.load_state_dict(checkpoint['actor_critic'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
         self.num_timesteps = checkpoint['num_timesteps']
