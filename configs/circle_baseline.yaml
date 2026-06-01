@@ -11,9 +11,9 @@ env:
 # Path
 path:
   type: circle
-  radius: 0.15  # meters (reduced from 0.3)
-  center: [0.4, 0.0, 0.5]  # [x, y, z] - moved to reachable workspace
-  speed: 0.1  # m/s (halved - 0.2 was too fast, robot couldn't recover once behind)
+  radius: 0.15  # meters
+  center: [0.32, 0.0, 0.52]  # [x, y, z] - centered so EE starts ON the circle
+  speed: 0.1  # m/s
 
 # Control
 control:
