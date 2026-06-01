@@ -46,9 +46,12 @@ reward:
   # Linear fallback for position reward - ensures gradient exists at large errors
   # Beyond this distance, exponential reward is near-zero, linear provides recovery signal
   pos_linear_fallback_max: 0.5  # 500mm
-  # Gate for tangent progress - beyond this, focus purely on position correction
-  # Prevents policy from just moving along tangent while ignoring position
-  vel_gate_max: 0.3  # 300mm
+  # Gate for velocity reward - beyond this, focus purely on position correction
+  vel_gate_max: 0.15  # 150mm - moderate gating
+  # Velocity reward type:
+  #   "tangent" - reward velocity along path tangent (can encourage shortcuts)
+  #   "arc_length" - reward arc-length progress ds/dt (rewards keeping up, not shortcuts)
+  vel_reward_type: arc_length
 
 # PPO
 ppo:

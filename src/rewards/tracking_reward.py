@@ -29,16 +29,15 @@ class TrackingReward:
         sig_ori: float = 0.1,
         sig_vel: float = 0.05,
         pos_linear_fallback_max: float = 0.5,
-        vel_gate_max: float = 0.3
+        vel_gate_max: float = 0.3,
+        vel_reward_type: str = "tangent"
     ):
         """Initialize reward computer.
 
         Args:
             w_pos: Weight for position reward
             w_ori: Weight for orientation reward (0 for Step 1)
-            w_vel: Weight for tangent progress reward (0 for Step 1-2)
-                   Rewards velocity component along path tangent direction.
-                   Uses tanh so faster-than-path speeds aren't penalized (allows catch-up).
+            w_vel: Weight for velocity/progress reward (0 for Step 1-2)
             w_action_rate: Weight for action rate penalty
             w_joint_vel: Weight for joint velocity penalty
             sig_pos: Position error standard deviation (meters)
@@ -46,13 +45,18 @@ class TrackingReward:
             sig_vel: Velocity scale for tangent progress normalization (m/s)
             pos_linear_fallback_max: Max error for linear fallback (meters). Beyond this,
                                      only minimal position reward. Default 0.5m (500mm).
-            vel_gate_max: Max error for tangent progress reward (meters). Beyond this,
-                          tangent progress is zeroed to focus on position correction.
+            vel_gate_max: Max error for velocity reward gating (meters). Beyond this,
+                          velocity reward is zeroed to focus on position correction.
                           Default 0.3m (300mm).
+            vel_reward_type: Type of velocity reward:
+                - "tangent": Reward velocity component along path tangent (original)
+                - "arc_length": Reward arc-length progress ds/dt (new)
+                Arc-length progress rewards keeping up with the moving target,
+                doesn't reward shortcuts since s only advances when EE is near path.
 
         Note:
             Step 1 (baseline): w_ori=0, w_vel=0
-            Step 3 (tangent progress): w_vel > 0
+            Step 3 (velocity progress): w_vel > 0
             Step 4 (orientation): w_ori > 0
         """
         self.w_pos = w_pos
@@ -66,6 +70,7 @@ class TrackingReward:
         self.sig_vel = sig_vel
         self.pos_linear_fallback_max = pos_linear_fallback_max
         self.vel_gate_max = vel_gate_max
+        self.vel_reward_type = vel_reward_type
 
     def compute(
         self,
@@ -74,7 +79,8 @@ class TrackingReward:
         prev_action: np.ndarray,
         joint_vel: np.ndarray,
         ori_error: Optional[float] = None,
-        tangent_progress: Optional[float] = None
+        tangent_progress: Optional[float] = None,
+        arc_progress: Optional[float] = None
     ) -> dict:
         """Compute reward and its components.
 
@@ -86,13 +92,15 @@ class TrackingReward:
             ori_error: Optional geodesic orientation error (radians)
             tangent_progress: Optional normalized velocity along tangent (ee_vel · tangent_dir / target_speed)
                               Positive = moving with path, negative = moving against
+            arc_progress: Optional normalized arc-length progress (ds/dt / target_speed)
+                          1.0 = keeping up with path, <1.0 = falling behind, >1.0 = catching up
 
         Returns:
             Dictionary with:
             - reward: Total reward
             - r_pos: Position reward component
             - r_ori: Orientation reward component
-            - r_vel: Tangent progress reward component
+            - r_vel: Velocity/progress reward component
             - p_action_rate: Action rate penalty
             - p_joint_vel: Joint velocity penalty
         """
@@ -115,23 +123,28 @@ class TrackingReward:
         else:
             r_ori = 0.0
 
-        # Tangent progress reward (if enabled)
-        # Uses tanh so faster-than-path speeds give diminishing returns (not penalties)
-        # This allows catch-up behavior when behind the path
+        # Velocity/progress reward (if enabled)
         # GATED by position error: when far off-path, focus on position correction first
-        if self.w_vel > 0 and tangent_progress is not None:
+        r_vel = 0.0
+        if self.w_vel > 0:
             # Gate: fades from 1.0 at 0 error to 0.0 at vel_gate_max
-            # This prevents r_vel from dominating when far off-path
             vel_gate = float(np.clip(1.0 - pos_error / self.vel_gate_max, 0.0, 1.0))
 
-            # tanh maps (-inf, inf) -> (-1, 1)
-            # progress=1.0 (at path speed) -> tanh(1) ≈ 0.76
-            # progress=2.0 (2x path speed) -> tanh(2) ≈ 0.96
-            # progress=0 (stationary) -> 0
-            # progress=-1 (backwards at path speed) -> tanh(-1) ≈ -0.76
-            r_vel = self.w_vel * vel_gate * np.tanh(tangent_progress)
-        else:
-            r_vel = 0.0
+            if self.vel_reward_type == "arc_length" and arc_progress is not None:
+                # Arc-length progress: rewards keeping up with path advancement
+                # arc_progress=1.0 means keeping up, <1.0 falling behind, >1.0 catching up
+                # Using tanh to bound the reward and allow catch-up
+                # Note: arc_progress naturally stays low when off-path (s doesn't advance)
+                # so gating is less critical, but we keep it for consistency
+                r_vel = self.w_vel * vel_gate * np.tanh(arc_progress)
+            elif self.vel_reward_type == "tangent" and tangent_progress is not None:
+                # Tangent progress: rewards velocity component along path tangent
+                # tanh maps (-inf, inf) -> (-1, 1)
+                # progress=1.0 (at path speed) -> tanh(1) ≈ 0.76
+                # progress=2.0 (2x path speed) -> tanh(2) ≈ 0.96
+                # progress=0 (stationary) -> 0
+                # progress=-1 (backwards at path speed) -> tanh(-1) ≈ -0.76
+                r_vel = self.w_vel * vel_gate * np.tanh(tangent_progress)
 
         # Action rate penalty (jerk in action space)
         # Adaptive: scale by pos_quality so corrections aren't penalized when off-path
@@ -166,7 +179,8 @@ class TrackingReward:
         target_vel: Optional[np.ndarray],
         action: np.ndarray,
         prev_action: np.ndarray,
-        joint_vel: np.ndarray
+        joint_vel: np.ndarray,
+        arc_progress: Optional[float] = None
     ) -> dict:
         """Compute reward from full state (convenience wrapper).
 
@@ -180,6 +194,7 @@ class TrackingReward:
             action: Current action (6,)
             prev_action: Previous action (6,)
             joint_vel: Joint velocities (n,)
+            arc_progress: Optional arc-length progress (ds/dt / target_speed)
 
         Returns:
             Reward dictionary
@@ -192,10 +207,10 @@ class TrackingReward:
         if self.w_ori > 0 and target_quat is not None:
             ori_error = geodesic_angle(ee_quat, target_quat)
 
-        # Tangent progress (if needed)
+        # Tangent progress (if needed for tangent reward type)
         # Compute velocity component along path tangent, normalized by target speed
         tangent_progress = None
-        if self.w_vel > 0 and target_vel is not None:
+        if self.w_vel > 0 and self.vel_reward_type == "tangent" and target_vel is not None:
             target_speed = np.linalg.norm(target_vel)
             if target_speed > 1e-8:
                 tangent_dir = target_vel / target_speed
@@ -212,7 +227,8 @@ class TrackingReward:
             prev_action=prev_action,
             joint_vel=joint_vel,
             ori_error=ori_error,
-            tangent_progress=tangent_progress
+            tangent_progress=tangent_progress,
+            arc_progress=arc_progress
         )
 
     def max_reward(self) -> float:

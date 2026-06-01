@@ -229,7 +229,19 @@ class EETrackingEnv(gym.Env):
         mujoco.mj_step(self.model, self.data)
 
         # Update path reference (open-loop advancement)
+        # Track arc-length progress for velocity reward
+        s_previous = self.s_current
         self._advance_path_reference()
+
+        # Compute arc-length progress (ds/dt normalized by target speed)
+        ds = self.s_current - s_previous
+        # Handle wrap-around for closed paths (e.g., circle)
+        if ds < -self.path.total_length / 2:
+            ds += self.path.total_length
+        elif ds > self.path.total_length / 2:
+            ds -= self.path.total_length
+        target_speed = np.linalg.norm(self.path.velocity(self.s_current))
+        arc_progress = ds / (self.dt * target_speed) if target_speed > 1e-8 else 0.0
 
         # Get new state
         state_new = self._get_robot_state()
@@ -251,7 +263,8 @@ class EETrackingEnv(gym.Env):
             target_vel=target_vel,  # Enable velocity matching
             action=action,
             prev_action=self.prev_action,
-            joint_vel=state_new.joint_vel
+            joint_vel=state_new.joint_vel,
+            arc_progress=arc_progress  # New: arc-length progress
         )
 
         reward = reward_dict['reward']

@@ -35,7 +35,7 @@ def parse_args():
     parser.add_argument('--config', type=str, required=True,
                        help='Path to config YAML file')
     parser.add_argument('--mode', type=str, default='video',
-                       choices=['viewer', 'video', 'headless'],
+                       choices=['viewer', 'video', 'headless','plot'],
                        help='Visualization mode')
     parser.add_argument('--episodes', type=int, default=1,
                        help='Number of episodes to run')
@@ -289,7 +289,7 @@ def main():
             )
 
         # Episode recorder
-        episode_recorder = EpisodeRecorder() if (args.save_data or args.save_plots) else None
+        episode_recorder = EpisodeRecorder() if (args.save_data or args.save_plots or args.mode == 'plot') else None
 
         # Run episode
         if args.mode == 'viewer':
@@ -299,6 +299,19 @@ def main():
                 env, agent, obs_rms,
                 episode_recorder=episode_recorder,
                 deterministic=args.deterministic
+            )
+        elif args.mode == 'plot':
+            plotter_traj = TrajectoryPlotter()
+            episode_data = run_episode(
+                env, agent, obs_rms,
+                episode_recorder=episode_recorder,
+                deterministic=args.deterministic
+            )
+            plotter_traj.plot_3d_trajectory(
+                episode_data['ee_positions'], # type: ignore
+                episode_data['target_positions'], # type: ignore
+                save_path=None,
+                show=True
             )
         else:
             # Video or headless mode
