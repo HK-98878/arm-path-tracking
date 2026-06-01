@@ -90,6 +90,106 @@ class CurriculumManager:
             self.steps_in_stage += n
 
 
+class HyperparamScheduler:
+    """Manages LR decay and entropy annealing with curriculum-aware warmup."""
+
+    def __init__(self, config):
+        """Initialize scheduler.
+
+        Args:
+            config: Configuration object with ppo and curriculum settings
+        """
+        # LR settings
+        self.lr_initial = config.ppo.learning_rate
+        self.lr_min = getattr(config.ppo, 'lr_min', self.lr_initial * 0.1)
+        self.lr_decay = getattr(config.ppo, 'lr_decay', 'linear')
+
+        # Entropy settings
+        self.ent_initial = config.ppo.ent_coef
+        self.ent_min = getattr(config.ppo, 'ent_coef_min', self.ent_initial * 0.1)
+        self.ent_decay = getattr(config.ppo, 'ent_decay', 'linear')
+
+        # Training duration
+        self.total_timesteps = config.training.total_timesteps
+
+        # Curriculum warmup settings (if curriculum enabled)
+        self.curriculum_enabled = getattr(config, 'curriculum', None) is not None and getattr(config.curriculum, 'enabled', False)
+        if self.curriculum_enabled:
+            self.lr_warmup_mult = getattr(config.curriculum, 'lr_warmup_multiplier', 1.0)
+            self.ent_warmup_mult = getattr(config.curriculum, 'ent_warmup_multiplier', 1.0)
+            self.warmup_steps = config.curriculum.warmup_after_transition
+        else:
+            self.lr_warmup_mult = 1.0
+            self.ent_warmup_mult = 1.0
+            self.warmup_steps = 0
+
+        # State for curriculum warmup
+        self.steps_since_transition = float('inf')  # Start with no warmup active
+
+    def on_curriculum_transition(self):
+        """Called when curriculum advances to a new stage."""
+        self.steps_since_transition = 0
+
+    def step(self):
+        """Increment warmup counter."""
+        if self.steps_since_transition < float('inf'):
+            self.steps_since_transition += 1
+
+    def get_lr(self, timestep: int) -> float:
+        """Get learning rate for given timestep.
+
+        Args:
+            timestep: Current training timestep
+
+        Returns:
+            Learning rate (with decay and warmup applied)
+        """
+        # Base LR with decay
+        progress = timestep / self.total_timesteps
+        if self.lr_decay == 'linear':
+            base_lr = self.lr_initial + (self.lr_min - self.lr_initial) * progress
+        else:
+            base_lr = self.lr_initial  # No decay
+
+        base_lr = max(base_lr, self.lr_min)
+
+        # Apply warmup multiplier if in warmup period
+        if self.steps_since_transition < self.warmup_steps:
+            warmup_progress = self.steps_since_transition / self.warmup_steps
+            # Linearly decay warmup multiplier from lr_warmup_mult to 1.0
+            multiplier = self.lr_warmup_mult + (1.0 - self.lr_warmup_mult) * warmup_progress
+            return base_lr * multiplier
+
+        return base_lr
+
+    def get_entropy_coef(self, timestep: int) -> float:
+        """Get entropy coefficient for given timestep.
+
+        Args:
+            timestep: Current training timestep
+
+        Returns:
+            Entropy coefficient (with annealing and warmup applied)
+        """
+        # Base entropy with annealing
+        progress = timestep / self.total_timesteps
+        if self.ent_decay == 'linear':
+            base_ent = self.ent_initial + (self.ent_min - self.ent_initial) * progress
+        else:
+            base_ent = self.ent_initial  # No decay
+
+        base_ent = max(base_ent, self.ent_min)
+
+        # Apply warmup multiplier if in warmup period
+        if self.steps_since_transition < self.warmup_steps:
+            warmup_progress = self.steps_since_transition / self.warmup_steps
+            # Linearly decay warmup multiplier from ent_warmup_mult to 1.0
+            multiplier = self.ent_warmup_mult + (1.0 - self.ent_warmup_mult) * warmup_progress
+            return base_ent * multiplier
+
+        return base_ent
+
+
 def check_for_spike(current_error, previous_error, threshold_ratio=2.0):
     """Detect if error has spiked dramatically."""
     if previous_error is not None and previous_error > 0:
@@ -352,6 +452,14 @@ def train(config):
         caps_config=config.caps.to_dict() if hasattr(config, 'caps') else None
     )
 
+    # Create hyperparameter scheduler for LR decay and entropy annealing
+    scheduler = HyperparamScheduler(config)
+    print(f"\nHyperparameter scheduling:")
+    print(f"  LR: {scheduler.lr_initial:.2e} → {scheduler.lr_min:.2e} ({scheduler.lr_decay})")
+    print(f"  Entropy: {scheduler.ent_initial:.3f} → {scheduler.ent_min:.3f} ({scheduler.ent_decay})")
+    if curriculum.enabled:
+        print(f"  Curriculum warmup: LR {scheduler.lr_warmup_mult}x, Ent {scheduler.ent_warmup_mult}x for {scheduler.warmup_steps} steps")
+
     print(f"\nTraining for {config.training.total_timesteps:,} timesteps...")
     print(f"  n_steps per update: {config.ppo.n_steps}")
     print(f"  Total updates: {config.training.total_timesteps // config.ppo.n_steps}")
@@ -380,8 +488,16 @@ def train(config):
     warmup_end_step = warmup_steps if not curriculum.enabled else warmup_steps
 
     for timestep in range(config.training.total_timesteps):
-        # Curriculum step counter
+        # Curriculum and scheduler step counters
         curriculum.step()
+        scheduler.step()
+
+        # Update LR and entropy coefficient based on schedule
+        current_lr = scheduler.get_lr(timestep)
+        current_ent = scheduler.get_entropy_coef(timestep)
+        agent.set_learning_rate(current_lr)
+        agent.set_entropy_coef(current_ent)
+
         # Freeze normalization after warmup
         if timestep == warmup_end_step and not obs_rms.frozen:
             obs_rms.freeze()
@@ -433,6 +549,7 @@ def train(config):
                 print(f"  Entropy: {-update_metrics['entropy_loss']:.4f}")
                 print(f"  Approx KL: {update_metrics['approx_kl']:.4f}")
                 print(f"  Clip fraction: {update_metrics['clip_fraction']:.4f}")
+                print(f"  LR: {current_lr:.2e}, Ent coef: {current_ent:.4f}")
 
         # Evaluation
         if (timestep + 1) % config.training.eval_frequency == 0:
@@ -466,6 +583,8 @@ def train(config):
                     'approx_kl': float(last_update_metrics['approx_kl']),
                     'clip_fraction': float(last_update_metrics['clip_fraction']),
                     'caps_loss': float(last_update_metrics.get('caps_loss', 0.0)),
+                    'learning_rate': float(current_lr),
+                    'ent_coef': float(current_ent),
                 })
             save_log()
 
@@ -484,9 +603,17 @@ def train(config):
             # Curriculum advancement check
             if curriculum.should_advance():
                 new_speed, new_sig_pos = curriculum.advance()
+
+                # Notify scheduler of transition (triggers LR/entropy warmup)
+                scheduler.on_curriculum_transition()
+                boosted_lr = scheduler.get_lr(timestep)
+                boosted_ent = scheduler.get_entropy_coef(timestep)
+
                 print(f"\n{'='*60}")
                 print(f"CURRICULUM: Advancing to Stage {curriculum.current_stage}")
                 print(f"  speed: {new_speed} m/s, sig_pos: {new_sig_pos}")
+                print(f"  LR boosted: {boosted_lr:.2e} (warmup for {scheduler.warmup_steps} steps)")
+                print(f"  Entropy boosted: {boosted_ent:.4f}")
                 print('='*60)
 
                 # Recreate environment with new speed and sig_pos

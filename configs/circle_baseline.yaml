@@ -52,14 +52,18 @@ reward:
 
 # PPO
 ppo:
-  learning_rate: 0.00003  # Reduced to prevent aggressive updates causing divergence
+  learning_rate: 0.00003  # Initial LR
+  lr_min: 0.000005        # Minimum LR (floor for decay)
+  lr_decay: linear        # Decay type: linear decay over training
   gamma: 0.99
   gae_lambda: 0.95
   clip_epsilon: 0.2
   n_steps: 2048
   n_epochs: 4    # Reduced from 10 - fewer passes over same data
   batch_size: 64
-  ent_coef: 0.01
+  ent_coef: 0.01          # Initial entropy coefficient
+  ent_coef_min: 0.001     # Minimum entropy (floor for annealing)
+  ent_decay: linear       # Decay type: linear annealing over training
   vf_coef: 0.5
   max_grad_norm: 0.5
   hidden_sizes: [256, 256]
@@ -111,3 +115,7 @@ curriculum:
       max_steps: 400000
   consecutive_evals: 5
   warmup_after_transition: 10000
+  # LR and entropy warmup at stage transitions
+  # Temporarily boost both to help adapt to harder task, then decay again
+  lr_warmup_multiplier: 2.0      # 2x LR boost after transition
+  ent_warmup_multiplier: 2.0     # 2x entropy boost after transition

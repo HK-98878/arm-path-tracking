@@ -332,3 +332,28 @@ class PPO:
             reward_normalizer.ret_rms.var = checkpoint['reward_rms_var']
             reward_normalizer.ret_rms.count = checkpoint['reward_rms_count']
             reward_normalizer.ret_rms.frozen = checkpoint.get('reward_rms_frozen', False)
+
+    def set_learning_rate(self, lr: float):
+        """Update learning rate for optimizer.
+
+        Args:
+            lr: New learning rate
+        """
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = lr
+
+    def get_learning_rate(self) -> float:
+        """Get current learning rate."""
+        return self.optimizer.param_groups[0]['lr']
+
+    def set_entropy_coef(self, ent_coef: float):
+        """Update entropy coefficient.
+
+        Args:
+            ent_coef: New entropy coefficient
+        """
+        self.ent_coef = ent_coef
+
+    def get_entropy_coef(self) -> float:
+        """Get current entropy coefficient."""
+        return self.ent_coef
