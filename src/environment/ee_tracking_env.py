@@ -177,8 +177,11 @@ class EETrackingEnv(gym.Env):
         if not hasattr(self, '_printed_init_pos'):
             target_pos = self.path.position(self.s_current)
             init_error = np.linalg.norm(ee_pos - target_pos)
+            s0_pos = self.path.position(0)
             print(f"\n  Initial EE position: {ee_pos}")
-            print(f"  Starting at s={self.s_current:.3f} (closest point)")
+            print(f"  Circle center: {self.path.center}, radius: {self.path.radius}")
+            print(f"  Position at s=0: {s0_pos}")
+            print(f"  Starting at s={self.s_current:.3f} / {self.path.total_length:.3f} (closest point)")
             print(f"  Target position: {target_pos}")
             print(f"  Initial error: {init_error*1000:.1f}mm")
             self._printed_init_pos = True
