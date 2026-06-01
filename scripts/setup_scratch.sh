@@ -51,7 +51,7 @@ VENV_DIR="${SCRATCH_BASE}/arm_tracking_venv"
 CACHE_DIR="${SCRATCH_BASE}/.cache"
 
 # Your project root (adjust if different)
-PROJECT_ROOT="${HOME}/arm_path_tracking"
+PROJECT_ROOT="${HOME}/Documents/arm-path-tracking"
 
 # ---------------------------------------------------------------------------
 # 1. REDIRECT ALL CACHES TO SCRATCH — set BEFORE touching pip/uv
