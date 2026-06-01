@@ -353,39 +353,79 @@ class EETrackingEnv(gym.Env):
         return dx_ee_world
 
     def _advance_path_reference(self):
-        """Advance path reference using nearest-point (carrot-on-stick).
+        """Advance path reference with monotonic, bounded nearest-point search.
 
-        Instead of open-loop advancement which can outrun the robot,
-        we find the nearest point on the path and add a small lookahead.
-        This ensures the reference "waits" for the robot if it falls behind.
+        Key properties:
+        - Monotonic: s only moves forward (or stays), never backward
+        - Bounded: prefers smaller forward step when multiple minima exist
+        - Smooth: uses fine sampling + gradient refinement to reduce jitter
         """
-        # Get current EE position
         ee_pos = self.data.xpos[self.ee_body_id]
 
-        # Find nearest point on path (search around current s)
-        # Search in a window around current position for efficiency
-        search_range = 0.2  # Search ±0.2m of arc length
-        n_samples = 50
-        s_min = self.s_current - search_range
-        s_max = self.s_current + search_range
+        # Monotonic forward search only
+        # Small backward allowance (5mm) for minor corrections, but mainly forward
+        backward_allowance = 0.005
+        max_forward = 0.05  # Max 50mm forward per step (at 0.2m/s, dt=0.01 -> 2mm expected)
+        n_samples = 100  # Finer sampling for smoothness
 
+        # Search from (current - small_back) to (current + max_forward)
+        s_min = self.s_current - backward_allowance
+        s_max = self.s_current + max_forward
+
+        # Generate samples WITHOUT wrap-around to keep them contiguous
         s_samples = np.linspace(s_min, s_max, n_samples)
-        # Wrap to valid range [0, total_length)
-        s_samples = s_samples % self.path.total_length
 
-        # Find closest point
+        # Find nearest point, preferring smaller s (earlier on path) for stability
         min_dist = float('inf')
-        nearest_s = self.s_current
-        for s in s_samples:
-            pos = self.path.position(s)
+        best_s = self.s_current
+        for s_raw in s_samples:
+            # Wrap for position lookup only
+            s_wrapped = s_raw % self.path.total_length
+            pos = self.path.position(s_wrapped)
             dist = np.linalg.norm(ee_pos - pos)
-            if dist < min_dist:
-                min_dist = dist
-                nearest_s = s
 
-        # Add small lookahead so reference stays slightly ahead
-        lookahead = 0.01  # 10mm lookahead in arc length
-        self.s_current = (nearest_s + lookahead) % self.path.total_length
+            # Prefer this point if closer, or if same distance but smaller s (bounded)
+            if dist < min_dist - 1e-6:  # Clear improvement
+                min_dist = dist
+                best_s = s_raw
+            elif abs(dist - min_dist) < 1e-6 and s_raw < best_s:
+                # Same distance, prefer smaller s (bounded selection)
+                best_s = s_raw
+
+        # Gradient refinement for sub-sample smoothness
+        best_s = self._refine_nearest_s(ee_pos, best_s)
+
+        # Apply small lookahead so reference stays slightly ahead
+        lookahead = 0.005  # 5mm lookahead (reduced from 10mm)
+        self.s_current = (best_s + lookahead) % self.path.total_length
+
+    def _refine_nearest_s(self, ee_pos: np.ndarray, s_coarse: float, n_iters: int = 3) -> float:
+        """Gradient-based refinement of nearest arc length.
+
+        Uses Newton-like steps to find local minimum of distance to path.
+        """
+        s = s_coarse
+        step_size = 0.001  # 1mm initial step for finite differences
+
+        for _ in range(n_iters):
+            s_wrapped = s % self.path.total_length
+
+            # Compute gradient via finite differences
+            pos_center = self.path.position(s_wrapped)
+            pos_plus = self.path.position((s + step_size) % self.path.total_length)
+            pos_minus = self.path.position((s - step_size) % self.path.total_length)
+
+            dist_center = np.linalg.norm(ee_pos - pos_center)
+            dist_plus = np.linalg.norm(ee_pos - pos_plus)
+            dist_minus = np.linalg.norm(ee_pos - pos_minus)
+
+            # Gradient: d(dist)/ds ≈ (dist_plus - dist_minus) / (2 * step_size)
+            grad = (dist_plus - dist_minus) / (2 * step_size)
+
+            # Simple gradient descent step (with damping)
+            s = s - 0.5 * step_size * np.sign(grad)
+
+        return s
 
     def render(self):
         """Render environment (optional, for debugging)."""

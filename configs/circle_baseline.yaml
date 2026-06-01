@@ -40,7 +40,7 @@ reward:
 
 # PPO
 ppo:
-  learning_rate: 0.0001  # Back to 0.0001 - training was too slow
+  learning_rate: 0.00003  # Reduced to prevent aggressive updates causing divergence
   gamma: 0.99
   gae_lambda: 0.95
   clip_epsilon: 0.2
@@ -55,8 +55,8 @@ ppo:
 # CAPS - smoothness in policy loss (more principled than reward penalties)
 caps:
   enabled: true
-  lambda_temporal: 0.1   # Penalize action changes between timesteps
-  lambda_spatial: 0.01   # Penalize sensitivity to observation noise
+  lambda_temporal: 0.5   # Penalize action changes between timesteps (5x increase)
+  lambda_spatial: 0.1    # Penalize sensitivity to observation noise (10x increase)
   spatial_noise_std: 0.01
 
 # Training

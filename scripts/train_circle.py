@@ -192,6 +192,7 @@ def train(config):
             'ppo': config.ppo.to_dict(),
             'path': config.path.to_dict(),
             'training': config.training.to_dict(),
+            'caps': config.caps.to_dict() if hasattr(config, 'caps') else {'enabled': False},
         },
         'evaluations': [],
         'training_updates': [],
@@ -250,6 +251,7 @@ def train(config):
     episode_reward = 0
     episode_length = 0
     num_episodes = 0
+    last_update_metrics = None
 
     for timestep in range(config.training.total_timesteps):
         # Freeze normalization after warmup
@@ -292,8 +294,9 @@ def train(config):
         # Update policy
         if (timestep + 1) % config.ppo.n_steps == 0:
             update_metrics = agent.update(obs, done)
+            last_update_metrics = update_metrics  # Store for logging at eval time
 
-            # Log training metrics
+            # Console log (sparse)
             if (timestep + 1) % config.training.log_frequency == 0:
                 print(f"\nTimestep {timestep + 1:,} / {config.training.total_timesteps:,}")
                 print(f"  Episodes: {num_episodes}")
@@ -302,17 +305,6 @@ def train(config):
                 print(f"  Entropy: {-update_metrics['entropy_loss']:.4f}")
                 print(f"  Approx KL: {update_metrics['approx_kl']:.4f}")
                 print(f"  Clip fraction: {update_metrics['clip_fraction']:.4f}")
-
-                # Log to JSON
-                training_log['training_updates'].append({
-                    'timestep': timestep + 1,
-                    'episodes': num_episodes,
-                    'policy_loss': float(update_metrics['policy_loss']),
-                    'value_loss': float(update_metrics['value_loss']),
-                    'entropy': float(-update_metrics['entropy_loss']),
-                    'approx_kl': float(update_metrics['approx_kl']),
-                    'clip_fraction': float(update_metrics['clip_fraction']),
-                })
 
         # Evaluation
         if (timestep + 1) % config.training.eval_frequency == 0:
@@ -334,6 +326,19 @@ def train(config):
             # Log to JSON
             eval_entry = {'timestep': timestep + 1, **eval_metrics}
             training_log['evaluations'].append(eval_entry)
+
+            # Log training metrics at eval time (every 10k instead of 256k)
+            if last_update_metrics is not None:
+                training_log['training_updates'].append({
+                    'timestep': timestep + 1,
+                    'episodes': num_episodes,
+                    'policy_loss': float(last_update_metrics['policy_loss']),
+                    'value_loss': float(last_update_metrics['value_loss']),
+                    'entropy': float(-last_update_metrics['entropy_loss']),
+                    'approx_kl': float(last_update_metrics['approx_kl']),
+                    'clip_fraction': float(last_update_metrics['clip_fraction']),
+                    'caps_loss': float(last_update_metrics.get('caps_loss', 0.0)),
+                })
             save_log()
 
         # Save checkpoint
