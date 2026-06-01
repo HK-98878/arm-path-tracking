@@ -31,6 +31,13 @@ class RunningMeanStd:
         """Unfreeze statistics - allow updates again."""
         self.frozen = False
 
+    def reset(self):
+        """Reset statistics for curriculum stage transition."""
+        self.mean = np.zeros_like(self.mean)
+        self.var = np.ones_like(self.var)
+        self.count = self.epsilon
+        self.frozen = False
+
     def update(self, x: np.ndarray):
         """Update statistics with new batch of data.
 
@@ -166,3 +173,8 @@ class RewardNormalizer:
     def unfreeze(self):
         """Unfreeze the return statistics."""
         self.ret_rms.unfreeze()
+
+    def reset(self):
+        """Reset for curriculum stage transition."""
+        self.ret_rms.reset()
+        self.returns = 0.0

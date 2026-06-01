@@ -28,6 +28,76 @@ from src.utils.metrics import compute_jitter_metrics, compute_tracking_error_met
 from src.utils.normalization import RunningMeanStd, RewardNormalizer
 
 
+class CurriculumManager:
+    """Manages curriculum learning stage transitions."""
+
+    def __init__(self, config):
+        self.enabled = getattr(config, 'curriculum', None) is not None and getattr(config.curriculum, 'enabled', False)
+        if not self.enabled:
+            self.current_stage = 0
+            return
+
+        self.stages = list(config.curriculum.stages)
+        self.consecutive_evals = config.curriculum.consecutive_evals
+        self.warmup_steps = config.curriculum.warmup_after_transition
+        self.current_stage = 0
+        self.steps_in_stage = 0
+        self.eval_history = []  # List of pos_error_mean values
+
+    def get_current_params(self):
+        """Get speed and sig_pos for current stage."""
+        if not self.enabled:
+            return None, None
+        stage = self.stages[self.current_stage]
+        return stage['speed'], stage['sig_pos']
+
+    def record_eval(self, pos_error_mean):
+        """Record evaluation result."""
+        if self.enabled:
+            self.eval_history.append(pos_error_mean)
+
+    def should_advance(self):
+        """Check if should advance to next stage."""
+        if not self.enabled or self.current_stage >= len(self.stages) - 1:
+            return False
+
+        stage = self.stages[self.current_stage]
+        threshold = stage.get('advance_threshold')
+        max_steps = stage.get('max_steps', 200000)
+
+        # Threshold met for consecutive evals
+        if threshold and len(self.eval_history) >= self.consecutive_evals:
+            recent = self.eval_history[-self.consecutive_evals:]
+            if all(e < threshold for e in recent):
+                return True
+
+        # Fallback: max steps in stage
+        if self.steps_in_stage >= max_steps:
+            return True
+
+        return False
+
+    def advance(self):
+        """Advance to next stage. Returns new (speed, sig_pos)."""
+        self.current_stage += 1
+        self.steps_in_stage = 0
+        self.eval_history = []
+        return self.get_current_params()
+
+    def step(self, n=1):
+        """Increment step counter."""
+        if self.enabled:
+            self.steps_in_stage += n
+
+
+def check_for_spike(current_error, previous_error, threshold_ratio=2.0):
+    """Detect if error has spiked dramatically."""
+    if previous_error is not None and previous_error > 0:
+        if current_error > previous_error * threshold_ratio:
+            return True
+    return False
+
+
 def make_env(config):
     """Create environment from config."""
     # Create path
@@ -42,6 +112,45 @@ def make_env(config):
         model_path=str(project_root / config.env.model_path),
         path=path,
         reward_config=config.reward.to_dict(),
+        action_scale=np.array(config.control.action_scale),
+        dt=config.env.dt,
+        max_episode_steps=config.env.max_episode_steps,
+        ee_body_name=config.env.ee_body_name,
+        render_mode=None,  # Headless
+        dls_config=config.control.dls.to_dict() if hasattr(config.control, 'dls') else None
+    )
+
+    return env
+
+
+def make_env_with_speed(config, speed, sig_pos=None):
+    """Create environment with specified path speed (for curriculum transitions).
+
+    Args:
+        config: Configuration object
+        speed: Path speed to use (m/s)
+        sig_pos: Optional sig_pos override for reward function
+
+    Returns:
+        EETrackingEnv instance
+    """
+    # Create path with overridden speed
+    path = CirclePath(
+        radius=config.path.radius,
+        center=np.array(config.path.center),
+        speed=speed
+    )
+
+    # Build reward config with optional sig_pos override
+    reward_config = config.reward.to_dict()
+    if sig_pos is not None:
+        reward_config['sig_pos'] = sig_pos
+
+    # Create environment
+    env = EETrackingEnv(
+        model_path=str(project_root / config.env.model_path),
+        path=path,
+        reward_config=reward_config,
         action_scale=np.array(config.control.action_scale),
         dt=config.env.dt,
         max_episode_steps=config.env.max_episode_steps,
@@ -206,6 +315,17 @@ def train(config):
     # Create environment
     print("Creating environment...")
     env = make_env(config)
+
+    # Initialize curriculum manager
+    curriculum = CurriculumManager(config)
+    if curriculum.enabled:
+        speed, sig_pos = curriculum.get_current_params()
+        env.close()
+        env = make_env_with_speed(config, speed, sig_pos)
+        print(f"  Curriculum enabled - Stage 0: speed={speed} m/s, sig_pos={sig_pos}")
+    else:
+        print("  Curriculum disabled - using config path speed")
+
     print(f"  Observation space: {env.observation_space.shape}")
     print(f"  Action space: {env.action_space.shape}")
 
@@ -253,9 +373,17 @@ def train(config):
     num_episodes = 0
     last_update_metrics = None
 
+    # Spike detection tracking
+    prev_eval_error = None
+
+    # Curriculum warmup tracking (next timestep when normalization should freeze)
+    warmup_end_step = warmup_steps if not curriculum.enabled else warmup_steps
+
     for timestep in range(config.training.total_timesteps):
+        # Curriculum step counter
+        curriculum.step()
         # Freeze normalization after warmup
-        if timestep == warmup_steps:
+        if timestep == warmup_end_step and not obs_rms.frozen:
             obs_rms.freeze()
             reward_normalizer.freeze()
             print(f"\n  [Step {timestep}] Normalization frozen.")
@@ -340,6 +468,43 @@ def train(config):
                     'caps_loss': float(last_update_metrics.get('caps_loss', 0.0)),
                 })
             save_log()
+
+            # Spike detection and curriculum management
+            pos_error_mean = eval_metrics['pos_error_mean']
+            curriculum.record_eval(pos_error_mean)
+
+            # Spike detection
+            if check_for_spike(pos_error_mean, prev_eval_error):
+                print(f"\n  WARNING: Error spiked from {prev_eval_error*1000:.1f}mm to {pos_error_mean*1000:.1f}mm")
+                spike_path = output_dir / f"spike_detected_{timestep + 1}.pt"
+                agent.save(str(spike_path), obs_rms=obs_rms, reward_normalizer=reward_normalizer)
+                print(f"  Saved spike checkpoint: {spike_path}")
+            prev_eval_error = pos_error_mean
+
+            # Curriculum advancement check
+            if curriculum.should_advance():
+                new_speed, new_sig_pos = curriculum.advance()
+                print(f"\n{'='*60}")
+                print(f"CURRICULUM: Advancing to Stage {curriculum.current_stage}")
+                print(f"  speed: {new_speed} m/s, sig_pos: {new_sig_pos}")
+                print('='*60)
+
+                # Recreate environment with new speed and sig_pos
+                env.close()
+                env = make_env_with_speed(config, new_speed, new_sig_pos)
+
+                # Unfreeze normalizers to allow gradual adaptation (don't reset - too disruptive)
+                obs_rms.unfreeze()
+                reward_normalizer.unfreeze()
+
+                # Reset observation
+                obs, _ = env.reset()
+                obs_rms.update(obs)
+                obs = obs_rms.normalize(obs)
+
+                # Set new warmup end point (normalizers unfrozen for gradual adaptation)
+                warmup_end_step = timestep + curriculum.warmup_steps
+                print(f"  Normalizers unfrozen. Will re-freeze at step {warmup_end_step}")
 
         # Save checkpoint
         if (timestep + 1) % config.training.save_frequency == 0:
