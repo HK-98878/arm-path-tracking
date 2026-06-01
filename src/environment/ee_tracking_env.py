@@ -28,7 +28,7 @@ class EETrackingEnv(gym.Env):
     - All path-relative quantities in EE frame for generalization
     """
 
-    metadata = {"render_modes": ["rgb_array"], "render_fps": 50}
+    metadata = {"render_modes": ["rgb_array", "human"], "render_fps": 50}
 
     def __init__(
         self,
@@ -119,6 +119,12 @@ class EETrackingEnv(gym.Env):
             high=obs_high,
             dtype=np.float32
         )
+
+        # Rendering setup
+        self.renderer = None
+        self.camera = None
+        if render_mode is not None:
+            self._setup_rendering(render_mode)
 
         # Episode tracking
         self.step_count = 0
@@ -427,11 +433,54 @@ class EETrackingEnv(gym.Env):
 
         return s
 
+    def _setup_rendering(self, render_mode: str):
+        """Initialize rendering context.
+
+        Args:
+            render_mode: "rgb_array" for offscreen rendering, "human" for viewer
+        """
+        if render_mode == "rgb_array":
+            # Offscreen renderer for video export
+            self.renderer = mujoco.Renderer(self.model, height=480, width=640)
+            self.camera = mujoco.MjvCamera()
+            self._configure_camera()
+        elif render_mode == "human":
+            # Interactive viewer mode - handled by visualize_policy.py
+            # Just set up camera for potential use
+            self.camera = mujoco.MjvCamera()
+            self._configure_camera()
+
+    def _configure_camera(self):
+        """Configure default camera view centered on path."""
+        # Set camera to view the workspace around the path
+        # For circle path, center on path center
+        if hasattr(self.path, 'center'):
+            self.camera.lookat = self.path.center
+            # Set distance based on path size
+            if hasattr(self.path, 'radius'):
+                self.camera.distance = 2.5 * self.path.radius + 0.5
+            else:
+                self.camera.distance = 1.5
+        else:
+            # Default view for other paths
+            self.camera.lookat = np.array([0.4, 0.0, 0.5])
+            self.camera.distance = 1.5
+
+        self.camera.azimuth = 45
+        self.camera.elevation = -20
+
     def render(self):
-        """Render environment (optional, for debugging)."""
+        """Render environment.
+
+        Returns:
+            rgb_array: (H, W, 3) numpy array if render_mode is "rgb_array"
+            None: for "human" mode (handled externally)
+        """
         if self.render_mode == "rgb_array":
-            # TODO: Implement camera rendering
-            pass
+            if self.renderer is None:
+                raise RuntimeError("Renderer not initialized. Set render_mode in constructor.")
+            self.renderer.update_scene(self.data, camera=self.camera)
+            return self.renderer.render()
         return None
 
     def close(self):
