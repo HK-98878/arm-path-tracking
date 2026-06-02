@@ -483,6 +483,7 @@ def train(config):
 
     # Spike detection tracking
     prev_eval_error = None
+    spike_suppression_evals = 0  # Suppress spike detection for N evals after curriculum shift
 
     # Curriculum warmup tracking (next timestep when normalization should freeze)
     warmup_end_step = warmup_steps if not curriculum.enabled else warmup_steps
@@ -592,8 +593,10 @@ def train(config):
             pos_error_mean = eval_metrics['pos_error_mean']
             curriculum.record_eval(pos_error_mean)
 
-            # Spike detection
-            if check_for_spike(pos_error_mean, prev_eval_error):
+            # Spike detection (suppressed after curriculum transitions)
+            if spike_suppression_evals > 0:
+                spike_suppression_evals -= 1
+            elif check_for_spike(pos_error_mean, prev_eval_error):
                 print(f"\n  WARNING: Error spiked from {prev_eval_error*1000:.1f}mm to {pos_error_mean*1000:.1f}mm")
                 spike_path = output_dir / f"spike_detected_{timestep + 1}.pt"
                 agent.save(str(spike_path), obs_rms=obs_rms, reward_normalizer=reward_normalizer)
@@ -603,6 +606,9 @@ def train(config):
             # Curriculum advancement check
             if curriculum.should_advance():
                 new_speed, new_sig_pos = curriculum.advance()
+
+                # Suppress spike detection after transition (normalization change causes false spikes)
+                spike_suppression_evals = 3
 
                 # Notify scheduler of transition (triggers LR/entropy warmup)
                 scheduler.on_curriculum_transition()
