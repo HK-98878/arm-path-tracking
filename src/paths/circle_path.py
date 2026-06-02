@@ -4,11 +4,18 @@ This is the simplest path for Step 1 of the build order:
 - Closed-form position, velocity, curvature
 - Exact arc-length parameterization
 - Easy to verify correctness
+
+Supports orientation variation modes for curriculum learning:
+- fixed: Constant downward orientation
+- rock_x: Oscillate about world X axis
+- rock_y: Oscillate about world Y axis
 """
 
 import numpy as np
+from typing import List, Optional
 from .base_path import Path
 from .rmf import rmf_for_planar_curve
+from ..utils.kinematics import rotvec_to_quat, quat_multiply
 
 
 class CirclePath(Path):
@@ -24,7 +31,10 @@ class CirclePath(Path):
         radius: float,
         center: np.ndarray,
         speed: float,
-        normal: np.ndarray = np.array([0.0, 0.0, 1.0])
+        normal: np.ndarray = np.array([0.0, 0.0, 1.0]),
+        orientation_modes: Optional[List[str]] = None,
+        rock_amplitude: float = 0.175,  # ~10 degrees
+        n_oscillations: int = 2
     ):
         """Initialize circle path.
 
@@ -33,6 +43,9 @@ class CirclePath(Path):
             center: (3,) circle center in world frame
             speed: Constant tangential speed (m/s)
             normal: (3,) plane normal (default: XY plane, Z-up)
+            orientation_modes: List of allowed modes ['fixed', 'rock_x', 'rock_y']
+            rock_amplitude: Max tilt angle in radians (~0.175 = 10°)
+            n_oscillations: Number of rock cycles per lap
         """
         super().__init__()
 
@@ -47,6 +60,12 @@ class CirclePath(Path):
 
         # Total arc length (circumference)
         self.total_length = 2 * np.pi * radius
+
+        # Orientation variation parameters
+        self._orientation_modes = orientation_modes if orientation_modes else ['fixed']
+        self._rock_amplitude = rock_amplitude
+        self._n_oscillations = n_oscillations
+        self._orientation_mode = self._orientation_modes[0]  # Default to first mode
 
     def _build_frame(self):
         """Build orthonormal basis {u, v, normal} for circle plane.
@@ -67,6 +86,16 @@ class CirclePath(Path):
         # v = perpendicular to both normal and u (second basis vector)
         self.v = np.cross(self.normal, self.u)
         self.v = self.v / np.linalg.norm(self.v)
+
+    def reset_orientation_mode(self, rng: np.random.Generator = None):
+        """Select a random orientation mode for this episode.
+
+        Args:
+            rng: NumPy random generator (for reproducibility)
+        """
+        if rng is None:
+            rng = np.random.default_rng()
+        self._orientation_mode = rng.choice(self._orientation_modes)
 
     def position(self, s: float) -> np.ndarray:
         """Position at arc length s.
@@ -96,27 +125,41 @@ class CirclePath(Path):
         return self.speed * tangent
 
     def orientation(self, s: float) -> np.ndarray:
-        """Fixed downward orientation - EE Z-axis points down.
+        """Orientation at arc length s, possibly rocking about an axis.
 
         Args:
-            s: Arc length (unused - orientation is constant)
+            s: Arc length (meters)
 
         Returns:
             quaternion: (4,) orientation [x, y, z, w]
 
         Note:
-            For initial circle tracking, we use a fixed orientation:
-            - Z-axis points down (world -Z)
-            - X-axis points toward robot base (world -X)
-            - Y-axis points left (world +Y)
-
-            This matches the Panda's natural EE orientation at q_init,
-            giving near-zero initial orientation error. The policy only
-            needs to maintain this pose, not track a rotating frame.
-
-            This is 180° rotation about the Y-axis.
+            Base orientation is 180° about Y-axis (EE Z points down).
+            Rocking modes add sinusoidal oscillation about world X or Y.
         """
-        return np.array([0.0, 1.0, 0.0, 0.0])  # xyzw: 180° about Y
+        # Base orientation: 180 deg about Y (EE Z points down)
+        q_base = np.array([0.0, 1.0, 0.0, 0.0])
+
+        if self._orientation_mode == 'fixed':
+            return q_base
+
+        # Compute rock angle: A * sin(2*pi*n*s/L)
+        phase = 2 * np.pi * self._n_oscillations * s / self.total_length
+        theta = self._rock_amplitude * np.sin(phase)
+
+        # Determine rock axis (world frame)
+        if self._orientation_mode == 'rock_x':
+            axis = np.array([1.0, 0.0, 0.0])
+        elif self._orientation_mode == 'rock_y':
+            axis = np.array([0.0, 1.0, 0.0])
+        else:
+            return q_base  # Unknown mode, fallback to fixed
+
+        # Rock rotation as quaternion
+        q_rock = rotvec_to_quat(theta * axis)
+
+        # Compose: rock (world frame) then base orientation
+        return quat_multiply(q_rock, q_base)
 
     def curvature(self, s: float) -> float:
         """Curvature at arc length s.
@@ -133,16 +176,38 @@ class CirclePath(Path):
         """Angular velocity at arc length s.
 
         Args:
-            s: Arc length (meters, unused - orientation is fixed)
+            s: Arc length (meters)
 
         Returns:
             omega: (3,) angular velocity in world frame (rad/s)
 
         Note:
-            With fixed downward orientation, there is no angular velocity.
-            The EE maintains a constant pose throughout the path.
+            For fixed mode, returns zero.
+            For rocking modes, returns d(theta)/dt * axis where:
+            - d(theta)/dt = d(theta)/ds * ds/dt
+            - d(theta)/ds = A * (2*pi*n/L) * cos(phase)
+            - ds/dt = speed
         """
-        return np.zeros(3)
+        if self._orientation_mode == 'fixed':
+            return np.zeros(3)
+
+        # d(theta)/ds = A * (2*pi*n/L) * cos(phase)
+        phase = 2 * np.pi * self._n_oscillations * s / self.total_length
+        dtheta_ds = self._rock_amplitude * (2 * np.pi * self._n_oscillations / self.total_length) * np.cos(phase)
+
+        # omega = d(theta)/dt = d(theta)/ds * ds/dt
+        # Signed speed handles path direction automatically
+        omega_magnitude = dtheta_ds * self.speed
+
+        # Determine axis
+        if self._orientation_mode == 'rock_x':
+            axis = np.array([1.0, 0.0, 0.0])
+        elif self._orientation_mode == 'rock_y':
+            axis = np.array([0.0, 1.0, 0.0])
+        else:
+            return np.zeros(3)
+
+        return omega_magnitude * axis
 
     def tangent(self, s: float) -> np.ndarray:
         """Unit tangent at arc length s.
@@ -161,7 +226,7 @@ class CirclePath(Path):
         return (
             f"CirclePath(radius={self.radius:.3f}m, "
             f"center={self.center}, speed={self.speed:.3f}m/s, "
-            f"normal={self.normal})"
+            f"normal={self.normal}, mode={self._orientation_mode})"
         )
 
 

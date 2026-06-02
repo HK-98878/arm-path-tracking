@@ -218,11 +218,19 @@ def make_env(config, bidirectional=False, include_orientation=False):
     if bidirectional and np.random.random() < 0.5:
         speed = -speed
 
+    # Get orientation variation parameters
+    orientation_modes = getattr(config.path, 'orientation_modes', ['fixed'])
+    rock_amplitude = getattr(config.path, 'rock_amplitude', 0.175)
+    n_oscillations = getattr(config.path, 'n_oscillations', 2)
+
     # Create path
     path = CirclePath(
         radius=config.path.radius,
         center=np.array(config.path.center),
-        speed=speed
+        speed=speed,
+        orientation_modes=orientation_modes,
+        rock_amplitude=rock_amplitude,
+        n_oscillations=n_oscillations
     )
 
     # Create environment
@@ -247,7 +255,7 @@ def make_env_with_stage(config, stage_params, bidirectional=False):
 
     Args:
         config: Configuration object
-        stage_params: dict with speed, sig_pos, and optionally sig_ori, w_ori
+        stage_params: dict with speed, sig_pos, and optionally sig_ori, w_ori, orientation_modes
         bidirectional: If True, randomly negate speed
 
     Returns:
@@ -260,11 +268,22 @@ def make_env_with_stage(config, stage_params, bidirectional=False):
     if bidirectional and np.random.random() < 0.5:
         speed = -speed
 
-    # Create path with overridden speed
+    # Get orientation variation parameters (stage overrides config defaults)
+    orientation_modes = stage_params.get(
+        'orientation_modes',
+        getattr(config.path, 'orientation_modes', ['fixed'])
+    )
+    rock_amplitude = getattr(config.path, 'rock_amplitude', 0.175)
+    n_oscillations = getattr(config.path, 'n_oscillations', 2)
+
+    # Create path with overridden speed and orientation modes
     path = CirclePath(
         radius=config.path.radius,
         center=np.array(config.path.center),
-        speed=speed
+        speed=speed,
+        orientation_modes=orientation_modes,
+        rock_amplitude=rock_amplitude,
+        n_oscillations=n_oscillations
     )
 
     # Build reward config with stage overrides

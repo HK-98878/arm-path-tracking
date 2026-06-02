@@ -14,6 +14,10 @@ path:
   radius: 0.15  # meters
   center: [0.32, 0.0, 0.52]  # [x, y, z] - centered so EE starts ON the circle
   speed: 0.1  # m/s
+  # Orientation variation defaults (can be overridden per curriculum stage)
+  orientation_modes: ['fixed']  # Options: fixed, rock_x, rock_y
+  rock_amplitude: 0.175  # ~10 degrees max tilt
+  n_oscillations: 2      # Oscillations per lap
 
 # Control
 control:
@@ -103,32 +107,36 @@ seed: 42
 curriculum:
   enabled: true
   stages:
-    # Stage 0: Slow, loose tolerances (warmup)
+    # Stage 0: Slow, loose tolerances, fixed orientation only
     - speed: 0.05
       sig_pos: 0.15
       sig_ori: 0.20
       w_ori: 0.15
+      orientation_modes: ['fixed']
       advance_threshold: 0.08  # 80mm
       max_steps: 500000
-    # Stage 1: Moderate speed, tighten position
+    # Stage 1: Moderate speed, introduce rock_x
     - speed: 0.10
       sig_pos: 0.10
       sig_ori: 0.15
       w_ori: 0.25
+      orientation_modes: ['fixed', 'rock_x']
       advance_threshold: 0.06  # 60mm
       max_steps: 500000
-    # Stage 2: Faster, tighten both
+    # Stage 2: Faster, add rock_y (all modes)
     - speed: 0.15
       sig_pos: 0.05
       sig_ori: 0.12
       w_ori: 0.25
+      orientation_modes: ['fixed', 'rock_x', 'rock_y']
       advance_threshold: 0.04  # 40mm
       max_steps: 500000
-    # Stage 3: Full speed, tight tolerances
+    # Stage 3: Full speed, all modes, tight tolerances
     - speed: 0.20
       sig_pos: 0.02
       sig_ori: 0.10
       w_ori: 0.30
+      orientation_modes: ['fixed', 'rock_x', 'rock_y']
       advance_threshold: null  # Final stage
       max_steps: 1000000
   consecutive_evals: 5

@@ -60,15 +60,16 @@ class InteractiveViewer:
         self.data = data
 
     def run_episode(self, env, agent, obs_rms, episode_recorder=None,
-                    deterministic=True):
+                    deterministic=True, feedforward_only=False):
         """Run episode with interactive viewer.
 
         Args:
             env: Gymnasium environment
-            agent: PPO agent
+            agent: PPO agent (can be None if feedforward_only=True)
             obs_rms: Observation normalization stats
             episode_recorder: Optional EpisodeRecorder for data collection
             deterministic: Use deterministic policy
+            feedforward_only: Use zero actions (pure feedforward, no policy)
 
         Returns:
             episode_data: Dict if episode_recorder provided, else None
@@ -94,7 +95,10 @@ class InteractiveViewer:
                 step_start = time.time()
 
                 # Select action
-                action, _, _ = agent.select_action(obs, deterministic=deterministic)
+                if feedforward_only:
+                    action = np.zeros(env.action_space.shape[0])
+                else:
+                    action, _, _ = agent.select_action(obs, deterministic=deterministic)
 
                 # Get current state for recording
                 if episode_recorder:

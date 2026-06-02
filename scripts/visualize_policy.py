@@ -84,6 +84,9 @@ def make_env(config, render_mode='rgb_array', reverse_path=False):
         speed=speed
     )
 
+    # Enable orientation if w_ori > 0
+    include_orientation = getattr(config.reward, 'w_ori', 0) > 0
+
     env = EETrackingEnv(
         model_path=str(project_root / config.env.model_path),
         path=path,
@@ -93,7 +96,8 @@ def make_env(config, render_mode='rgb_array', reverse_path=False):
         max_episode_steps=config.env.max_episode_steps,
         ee_body_name=config.env.ee_body_name,
         render_mode=render_mode,
-        dls_config=config.control.dls.to_dict() if hasattr(config.control, 'dls') else None
+        dls_config=config.control.dls.to_dict() if hasattr(config.control, 'dls') else None,
+        include_orientation=include_orientation
     )
 
     return env
@@ -320,7 +324,8 @@ def main():
             episode_data = viewer.run_episode(
                 env, agent, obs_rms,
                 episode_recorder=episode_recorder,
-                deterministic=args.deterministic
+                deterministic=args.deterministic,
+                feedforward_only=args.feedforward_only
             )
         elif args.mode == 'plot':
             plotter_traj = TrajectoryPlotter()

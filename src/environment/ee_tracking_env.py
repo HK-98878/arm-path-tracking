@@ -150,6 +150,10 @@ class EETrackingEnv(gym.Env):
         """
         super().reset(seed=seed)
 
+        # Select orientation mode for this episode (if path supports it)
+        if hasattr(self.path, 'reset_orientation_mode'):
+            self.path.reset_orientation_mode(self.np_random)
+
         # Reset MuJoCo simulation
         mujoco.mj_resetData(self.model, self.data)
 
@@ -207,7 +211,8 @@ class EETrackingEnv(gym.Env):
 
         info = {
             's': self.s_current,
-            'step': self.step_count
+            'step': self.step_count,
+            'orientation_mode': getattr(self.path, '_orientation_mode', 'fixed')
         }
 
         return obs, info
