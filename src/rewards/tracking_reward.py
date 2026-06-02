@@ -29,6 +29,7 @@ class TrackingReward:
         sig_ori: float = 0.1,
         sig_vel: float = 0.05,
         pos_linear_fallback_max: float = 0.5,
+        ori_linear_fallback_max: float = 3.14,
         vel_gate_max: float = 0.3,
         vel_reward_type: str = "tangent"
     ):
@@ -45,6 +46,9 @@ class TrackingReward:
             sig_vel: Velocity scale for tangent progress normalization (m/s)
             pos_linear_fallback_max: Max error for linear fallback (meters). Beyond this,
                                      only minimal position reward. Default 0.5m (500mm).
+            ori_linear_fallback_max: Max error for orientation linear fallback (radians).
+                                     Provides gradient at large orientation errors where
+                                     exponential is near-zero. Default π rad (180°).
             vel_gate_max: Max error for velocity reward gating (meters). Beyond this,
                           velocity reward is zeroed to focus on position correction.
                           Default 0.3m (300mm).
@@ -69,6 +73,7 @@ class TrackingReward:
         self.sig_ori = sig_ori
         self.sig_vel = sig_vel
         self.pos_linear_fallback_max = pos_linear_fallback_max
+        self.ori_linear_fallback_max = ori_linear_fallback_max
         self.vel_gate_max = vel_gate_max
         self.vel_reward_type = vel_reward_type
 
@@ -118,8 +123,12 @@ class TrackingReward:
         r_pos = self.w_pos * pos_quality
 
         # Orientation reward (if enabled)
+        # Uses exponential + linear fallback like position, to ensure gradient at large errors
         if self.w_ori > 0 and ori_error is not None:
-            r_ori = self.w_ori * np.exp(-(ori_error / self.sig_ori) ** 2)
+            ori_quality_exp = np.exp(-(ori_error / self.sig_ori) ** 2)
+            ori_quality_linear = float(np.clip(1.0 - ori_error / self.ori_linear_fallback_max, 0.0, 1.0))
+            ori_quality = ori_quality_exp + 0.3 * ori_quality_linear * (1.0 - ori_quality_exp)
+            r_ori = self.w_ori * ori_quality
         else:
             r_ori = 0.0
 

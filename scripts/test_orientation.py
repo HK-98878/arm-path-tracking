@@ -130,9 +130,59 @@ def test_bidirectional():
     print("✓ Bidirectional randomization works!")
 
 
+def test_orientation_reward_fallback():
+    """Test orientation reward has gradient at large errors."""
+    from src.rewards.tracking_reward import TrackingReward
+
+    print("\n" + "=" * 60)
+    print("Test 4: Orientation Reward Linear Fallback")
+    print("=" * 60)
+
+    reward = TrackingReward(
+        w_pos=1.0,
+        w_ori=0.25,
+        sig_ori=0.15,  # ~8.6 degrees
+        ori_linear_fallback_max=3.14,  # π rad
+    )
+
+    # Test at various orientation errors
+    test_errors = [0.0, 0.15, 0.5, 1.0, 2.0, 3.0]  # radians
+    print(f"sig_ori = {reward.sig_ori} rad ({np.degrees(reward.sig_ori):.1f}°)")
+    print(f"ori_linear_fallback_max = {reward.ori_linear_fallback_max} rad")
+    print()
+    print("Orientation error → r_ori (with linear fallback):")
+
+    prev_r_ori = None
+    for err in test_errors:
+        result = reward.compute(
+            pos_error=0.01,
+            action=np.zeros(6),
+            prev_action=np.zeros(6),
+            joint_vel=np.zeros(7),
+            ori_error=err,
+        )
+        r_ori = result['r_ori']
+        gradient = "" if prev_r_ori is None else f"  (Δ = {r_ori - prev_r_ori:+.4f})"
+        print(f"  {np.degrees(err):>6.1f}° → r_ori = {r_ori:.4f}{gradient}")
+        prev_r_ori = r_ori
+
+    # Verify there's still gradient at large errors (not flat at 0)
+    result_large = reward.compute(
+        pos_error=0.01,
+        action=np.zeros(6),
+        prev_action=np.zeros(6),
+        joint_vel=np.zeros(7),
+        ori_error=2.0,  # ~115 degrees
+    )
+    assert result_large['r_ori'] > 0.01, f"r_ori should be > 0 at 115°, got {result_large['r_ori']}"
+    print()
+    print("✓ Orientation reward has gradient at large errors!")
+
+
 if __name__ == "__main__":
     try:
         test_angular_velocity()
+        test_orientation_reward_fallback()
         test_env_orientation()
         test_bidirectional()
 

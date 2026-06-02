@@ -46,6 +46,8 @@ reward:
   # Linear fallback for position reward - ensures gradient exists at large errors
   # Beyond this distance, exponential reward is near-zero, linear provides recovery signal
   pos_linear_fallback_max: 0.5  # 500mm
+  # Linear fallback for orientation reward - ensures gradient at large orientation errors
+  ori_linear_fallback_max: 3.14  # π rad (180 degrees)
   # Gate for velocity reward - beyond this, focus purely on position correction
   vel_gate_max: 0.15  # 150mm - moderate gating
   # Velocity reward type:
