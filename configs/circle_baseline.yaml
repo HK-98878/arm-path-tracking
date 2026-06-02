@@ -1,12 +1,10 @@
-# Run 42: Looser initial sig_ori for orientation gradient
-# Changes from run 41:
-#   - sig_ori stage 0: 0.20 -> 0.50 (ensures gradient at large orientation errors)
-#   - sig_ori ramp: 0.50 -> 0.30 -> 0.20 -> 0.15 (more gradual)
-#   - w_ori stage 0: 0.3 -> 0.5 (slightly higher to prioritize early orientation)
-# Run 41 issue: orientation collapsed to 118° at 110k, sig_ori=0.20 gave no gradient
-# Kept from run 41:
-#   - action_scale: 0.01 (10mm) - good balance
-#   - orientation_modes: fixed only
+# Run 43: Loose sig_ori (for gradient) + low w_ori (position priority)
+# Combines best of both:
+#   - sig_ori from run 42: loose (0.50->0.30->0.20->0.15) - ensures gradient at large errors
+#   - w_ori from run 41: low (0.3->0.5->0.7->1.0) - keeps position as priority
+# Run 42 issue: high w_ori + loose sig_ori = orientation dominated, position collapsed
+# Run 41 issue: tight sig_ori = no gradient at large orientation errors
+# Kept: action_scale 0.01, orientation_modes fixed only
 
 # Environment
 env:
@@ -104,39 +102,37 @@ seed: 42
 curriculum:
   enabled: true
   stages:
-    # Stage 0: Slow, VERY loose sig_ori to ensure gradient at large errors
-    # At 90° error (1.57 rad): exp(-(1.57/0.5)²) = 0.04 (has gradient!)
-    # vs sig_ori=0.20: exp(-(1.57/0.2)²) ≈ 0 (no gradient)
+    # Stage 0: Loose sig_ori (gradient at large errors) + low w_ori (position priority)
     - speed: 0.05
       sig_pos: 0.15
-      sig_ori: 0.50  # LOOSENED: was 0.20
-      w_ori: 0.5     # INCREASED: was 0.3
+      sig_ori: 0.50  # Loose: ensures gradient at large ori errors
+      w_ori: 0.3     # Low: from run 41, position stays priority
       orientation_modes: ['fixed']
       advance_threshold: 0.08  # 80mm
       max_steps: 500000
 
-    # Stage 1: Moderate speed, start tightening sig_ori
+    # Stage 1: Start tightening sig_ori, gradual w_ori increase
     - speed: 0.10
       sig_pos: 0.10
-      sig_ori: 0.30  # Gradual: was 0.15
-      w_ori: 0.6
+      sig_ori: 0.30
+      w_ori: 0.5
       orientation_modes: ['fixed']
       advance_threshold: 0.06  # 60mm
       max_steps: 500000
 
-    # Stage 2: Faster, continue tightening
+    # Stage 2: Continue tightening
     - speed: 0.15
       sig_pos: 0.05
-      sig_ori: 0.20  # Gradual: was 0.12
-      w_ori: 0.8
+      sig_ori: 0.20
+      w_ori: 0.7
       orientation_modes: ['fixed']
       advance_threshold: 0.04  # 40mm
       max_steps: 500000
 
-    # Stage 3: Full speed, tight but reasonable
+    # Stage 3: Full speed, balanced
     - speed: 0.20
       sig_pos: 0.02
-      sig_ori: 0.15  # Gradual: was 0.10
+      sig_ori: 0.15
       w_ori: 1.0
       orientation_modes: ['fixed']
       advance_threshold: null
