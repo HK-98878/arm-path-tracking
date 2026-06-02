@@ -40,7 +40,8 @@ class EETrackingEnv(gym.Env):
         max_episode_steps: int = 1000,
         ee_body_name: str = "attachment_site",
         render_mode: Optional[str] = None,
-        dls_config: Optional[dict] = None
+        dls_config: Optional[dict] = None,
+        include_orientation: bool = False
     ):
         """Initialize environment.
 
@@ -95,6 +96,9 @@ class EETrackingEnv(gym.Env):
             q_limits=(self.q_min, self.q_max),
             **dls_config
         )
+
+        # Orientation control flag
+        self.include_orientation = include_orientation
 
         # Observation builder
         self.obs_builder = ObservationBuilder(
@@ -198,7 +202,8 @@ class EETrackingEnv(gym.Env):
 
         # Get initial observation
         state = self._get_robot_state()
-        obs = self.obs_builder.build(state, self.path, self.s_current)
+        obs = self.obs_builder.build(state, self.path, self.s_current,
+                                     include_orientation=self.include_orientation)
 
         info = {
             's': self.s_current,
@@ -258,23 +263,25 @@ class EETrackingEnv(gym.Env):
         state_new.prev_action = action  # Update previous action
 
         # Compute observation (use wrapped s for path lookups)
-        obs = self.obs_builder.build(state_new, self.path, s_wrapped)
+        obs = self.obs_builder.build(state_new, self.path, s_wrapped,
+                                     include_orientation=self.include_orientation)
 
         # Compute reward
         target_pos = self.path.position(s_wrapped)
         target_vel = self.path.velocity(s_wrapped)
+        target_quat = self.path.orientation(s_wrapped) if self.include_orientation else None
 
         reward_dict = self.reward_computer.compute_from_state(
             ee_pos=state_new.ee_pos_world,
             ee_quat=state_new.ee_quat_world,
             ee_vel=state_new.ee_lin_vel_world,
             target_pos=target_pos,
-            target_quat=None,  # Step 1: no orientation
-            target_vel=target_vel,  # Enable velocity matching
+            target_quat=target_quat,
+            target_vel=target_vel,
             action=action,
             prev_action=self.prev_action,
             joint_vel=state_new.joint_vel,
-            arc_progress=arc_progress  # New: arc-length progress
+            arc_progress=arc_progress
         )
 
         reward = reward_dict['reward']
@@ -366,8 +373,12 @@ class EETrackingEnv(gym.Env):
         v_ref = self.path.velocity(s_wrapped)
         feedforward_linear = v_ref * self.dt
 
-        # For Step 1: no angular feedforward (no orientation tracking)
-        feedforward_angular = np.zeros(3)
+        # Angular feedforward: path angular velocity if orientation control enabled
+        if self.include_orientation:
+            omega_ref = self.path.angular_velocity(s_wrapped)
+            feedforward_angular = omega_ref * self.dt
+        else:
+            feedforward_angular = np.zeros(3)
 
         # Residual: policy output is in EE frame, transform to world frame
         residual_ee = self.action_scale * action

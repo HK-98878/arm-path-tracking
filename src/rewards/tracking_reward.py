@@ -167,6 +167,8 @@ class TrackingReward:
             'r_vel': float(r_vel),
             'p_action_rate': float(p_action_rate),
             'p_joint_vel': float(p_joint_vel),
+            'pos_error': float(pos_error),
+            'ori_error': float(ori_error) if ori_error is not None else 0.0,
         }
 
     def compute_from_state(

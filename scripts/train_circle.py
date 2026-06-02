@@ -45,11 +45,15 @@ class CurriculumManager:
         self.eval_history = []  # List of pos_error_mean values
 
     def get_current_params(self):
-        """Get speed and sig_pos for current stage."""
+        """Get all parameters for current stage.
+
+        Returns:
+            dict with speed, sig_pos, and optionally sig_ori, w_ori
+            or empty dict if curriculum disabled
+        """
         if not self.enabled:
-            return None, None
-        stage = self.stages[self.current_stage]
-        return stage['speed'], stage['sig_pos']
+            return {}
+        return dict(self.stages[self.current_stage])
 
     def record_eval(self, pos_error_mean):
         """Record evaluation result."""
@@ -198,13 +202,27 @@ def check_for_spike(current_error, previous_error, threshold_ratio=2.0):
     return False
 
 
-def make_env(config):
-    """Create environment from config."""
+def make_env(config, bidirectional=False, include_orientation=False):
+    """Create environment from config.
+
+    Args:
+        config: Configuration object
+        bidirectional: If True, randomly negate speed for this env
+        include_orientation: Whether to enable orientation control
+
+    Returns:
+        EETrackingEnv instance
+    """
+    # Randomize direction if bidirectional
+    speed = config.path.speed
+    if bidirectional and np.random.random() < 0.5:
+        speed = -speed
+
     # Create path
     path = CirclePath(
         radius=config.path.radius,
         center=np.array(config.path.center),
-        speed=config.path.speed
+        speed=speed
     )
 
     # Create environment
@@ -217,23 +235,31 @@ def make_env(config):
         max_episode_steps=config.env.max_episode_steps,
         ee_body_name=config.env.ee_body_name,
         render_mode=None,  # Headless
-        dls_config=config.control.dls.to_dict() if hasattr(config.control, 'dls') else None
+        dls_config=config.control.dls.to_dict() if hasattr(config.control, 'dls') else None,
+        include_orientation=include_orientation
     )
 
     return env
 
 
-def make_env_with_speed(config, speed, sig_pos=None):
-    """Create environment with specified path speed (for curriculum transitions).
+def make_env_with_stage(config, stage_params, bidirectional=False):
+    """Create environment with curriculum stage parameters.
 
     Args:
         config: Configuration object
-        speed: Path speed to use (m/s)
-        sig_pos: Optional sig_pos override for reward function
+        stage_params: dict with speed, sig_pos, and optionally sig_ori, w_ori
+        bidirectional: If True, randomly negate speed
 
     Returns:
         EETrackingEnv instance
     """
+    # Get speed from stage params
+    speed = stage_params.get('speed', config.path.speed)
+
+    # Randomize direction if bidirectional
+    if bidirectional and np.random.random() < 0.5:
+        speed = -speed
+
     # Create path with overridden speed
     path = CirclePath(
         radius=config.path.radius,
@@ -241,10 +267,17 @@ def make_env_with_speed(config, speed, sig_pos=None):
         speed=speed
     )
 
-    # Build reward config with optional sig_pos override
+    # Build reward config with stage overrides
     reward_config = config.reward.to_dict()
-    if sig_pos is not None:
-        reward_config['sig_pos'] = sig_pos
+    if stage_params.get('sig_pos') is not None:
+        reward_config['sig_pos'] = stage_params['sig_pos']
+    if stage_params.get('sig_ori') is not None:
+        reward_config['sig_ori'] = stage_params['sig_ori']
+    if stage_params.get('w_ori') is not None:
+        reward_config['w_ori'] = stage_params['w_ori']
+
+    # Determine if orientation control is enabled
+    include_orientation = reward_config.get('w_ori', 0) > 0
 
     # Create environment
     env = EETrackingEnv(
@@ -256,7 +289,8 @@ def make_env_with_speed(config, speed, sig_pos=None):
         max_episode_steps=config.env.max_episode_steps,
         ee_body_name=config.env.ee_body_name,
         render_mode=None,  # Headless
-        dls_config=config.control.dls.to_dict() if hasattr(config.control, 'dls') else None
+        dls_config=config.control.dls.to_dict() if hasattr(config.control, 'dls') else None,
+        include_orientation=include_orientation
     )
 
     return env
@@ -287,6 +321,7 @@ def evaluate(env, agent, obs_rms, num_episodes=5):
     all_p_action_rate = []
     all_p_joint_vel = []
     all_pos_errors = []
+    all_ori_errors = []
 
     for _ in range(num_episodes):
         obs, _ = env.reset()
@@ -300,10 +335,12 @@ def evaluate(env, agent, obs_rms, num_episodes=5):
 
         # Per-episode reward components
         ep_r_pos = []
+        ep_r_ori = []
         ep_r_vel = []
         ep_p_action_rate = []
         ep_p_joint_vel = []
         ep_pos_errors = []
+        ep_ori_errors = []
 
         while not done:
             action, _, _ = agent.select_action(obs, deterministic=True)
@@ -326,10 +363,12 @@ def evaluate(env, agent, obs_rms, num_episodes=5):
 
             # Collect reward components from info
             ep_r_pos.append(info.get('r_pos', 0))
+            ep_r_ori.append(info.get('r_ori', 0))
             ep_r_vel.append(info.get('r_vel', 0))
             ep_p_action_rate.append(info.get('p_action_rate', 0))
             ep_p_joint_vel.append(info.get('p_joint_vel', 0))
             ep_pos_errors.append(info.get('pos_error', 0))
+            ep_ori_errors.append(info.get('ori_error', 0))
 
         episode_rewards.append(episode_reward)
         episode_lengths.append(episode_length)
@@ -338,10 +377,12 @@ def evaluate(env, agent, obs_rms, num_episodes=5):
         all_targets.append(np.array(episode_targets))
 
         all_r_pos.append(np.mean(ep_r_pos))
+        all_r_ori.append(np.mean(ep_r_ori))
         all_r_vel.append(np.mean(ep_r_vel))
         all_p_action_rate.append(np.mean(ep_p_action_rate))
         all_p_joint_vel.append(np.mean(ep_p_joint_vel))
         all_pos_errors.extend(ep_pos_errors)
+        all_ori_errors.extend(ep_ori_errors)
 
     # Aggregate metrics
     metrics = {
@@ -350,6 +391,7 @@ def evaluate(env, agent, obs_rms, num_episodes=5):
         'mean_episode_length': float(np.mean(episode_lengths)),
         # Reward components (averaged across episodes)
         'mean_r_pos': float(np.mean(all_r_pos)),
+        'mean_r_ori': float(np.mean(all_r_ori)),
         'mean_r_vel': float(np.mean(all_r_vel)),
         'mean_p_action_rate': float(np.mean(all_p_action_rate)),
         'mean_p_joint_vel': float(np.mean(all_p_joint_vel)),
@@ -358,6 +400,10 @@ def evaluate(env, agent, obs_rms, num_episodes=5):
         'pos_error_std': float(np.std(all_pos_errors)),
         'pos_error_max': float(np.max(all_pos_errors)),
         'pos_error_p90': float(np.percentile(all_pos_errors, 90)),
+        # Orientation error statistics (radians)
+        'ori_error_mean': float(np.mean(all_ori_errors)),
+        'ori_error_std': float(np.std(all_ori_errors)),
+        'ori_error_max': float(np.max(all_ori_errors)) if all_ori_errors else 0.0,
     }
 
     # Jitter metrics (from first episode)
@@ -412,19 +458,26 @@ def train(config):
         with open(log_path, 'w') as f:
             json.dump(training_log, f, indent=2)
 
+    # Read bidirectional and orientation settings
+    bidirectional = getattr(config.training, 'bidirectional', False)
+    include_orientation = getattr(config.reward, 'w_ori', 0) > 0
+
     # Create environment
     print("Creating environment...")
-    env = make_env(config)
+    env = make_env(config, bidirectional=bidirectional, include_orientation=include_orientation)
 
     # Initialize curriculum manager
     curriculum = CurriculumManager(config)
     if curriculum.enabled:
-        speed, sig_pos = curriculum.get_current_params()
+        stage_params = curriculum.get_current_params()
         env.close()
-        env = make_env_with_speed(config, speed, sig_pos)
-        print(f"  Curriculum enabled - Stage 0: speed={speed} m/s, sig_pos={sig_pos}")
+        env = make_env_with_stage(config, stage_params, bidirectional=bidirectional)
+        print(f"  Curriculum enabled - Stage 0: {stage_params}")
     else:
         print("  Curriculum disabled - using config path speed")
+
+    print(f"  Bidirectional: {bidirectional}")
+    print(f"  Orientation control: {include_orientation}")
 
     print(f"  Observation space: {env.observation_space.shape}")
     print(f"  Action space: {env.action_space.shape}")
@@ -564,9 +617,11 @@ def train(config):
             print(f"  Mean episode length: {eval_metrics['mean_episode_length']:.1f}")
             print(f"  Mean position error: {eval_metrics['tracking_mean_position_error']*1000:.2f} mm")
             print(f"  Max position error: {eval_metrics['tracking_max_position_error']*1000:.2f} mm")
+            if eval_metrics.get('ori_error_mean', 0) > 0:
+                print(f"  Mean orientation error: {np.degrees(eval_metrics['ori_error_mean']):.2f} deg")
             print(f"  Jitter (integrated squared jerk): {eval_metrics['jitter_integrated_squared_jerk']:.6f}")
             print(f"  High-freq power ratio: {eval_metrics['jitter_high_freq_power_ratio']:.4f}")
-            print(f"  Reward components: r_pos={eval_metrics['mean_r_pos']:.3f}, r_vel={eval_metrics['mean_r_vel']:.3f}")
+            print(f"  Reward components: r_pos={eval_metrics['mean_r_pos']:.3f}, r_ori={eval_metrics['mean_r_ori']:.3f}, r_vel={eval_metrics['mean_r_vel']:.3f}")
             print(f"  Penalties: action_rate={eval_metrics['mean_p_action_rate']:.2e}, joint_vel={eval_metrics['mean_p_joint_vel']:.2e}")
 
             # Log to JSON
@@ -605,7 +660,7 @@ def train(config):
 
             # Curriculum advancement check
             if curriculum.should_advance():
-                new_speed, new_sig_pos = curriculum.advance()
+                stage_params = curriculum.advance()
 
                 # Suppress spike detection after transition (normalization change causes false spikes)
                 spike_suppression_evals = 3
@@ -617,14 +672,14 @@ def train(config):
 
                 print(f"\n{'='*60}")
                 print(f"CURRICULUM: Advancing to Stage {curriculum.current_stage}")
-                print(f"  speed: {new_speed} m/s, sig_pos: {new_sig_pos}")
+                print(f"  Stage params: {stage_params}")
                 print(f"  LR boosted: {boosted_lr:.2e} (warmup for {scheduler.warmup_steps} steps)")
                 print(f"  Entropy boosted: {boosted_ent:.4f}")
                 print('='*60)
 
-                # Recreate environment with new speed and sig_pos
+                # Recreate environment with new stage parameters
                 env.close()
-                env = make_env_with_speed(config, new_speed, new_sig_pos)
+                env = make_env_with_stage(config, stage_params, bidirectional=bidirectional)
 
                 # Unfreeze normalizers to allow gradual adaptation (don't reset - too disruptive)
                 obs_rms.unfreeze()

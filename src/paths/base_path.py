@@ -66,6 +66,23 @@ class Path(ABC):
         """
         pass
 
+    @abstractmethod
+    def angular_velocity(self, s: float) -> np.ndarray:
+        """Get angular velocity at arc length s.
+
+        Args:
+            s: Arc length parameter
+
+        Returns:
+            omega: (3,) angular velocity in world frame (rad/s)
+
+        Note:
+            For planar curves, omega = (speed / radius_of_curvature) * plane_normal.
+            For general 3D curves, this is the time derivative of orientation
+            expressed as an angular velocity vector.
+        """
+        pass
+
     def curvature(self, s: float) -> float:
         """Get path curvature at arc length s.
 

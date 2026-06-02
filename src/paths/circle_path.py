@@ -126,6 +126,28 @@ class CirclePath(Path):
         """
         return 1.0 / self.radius
 
+    def angular_velocity(self, s: float) -> np.ndarray:
+        """Angular velocity at arc length s.
+
+        For a planar circle, the RMF frame rotates about the plane normal
+        at constant angular speed omega = speed / radius.
+
+        Args:
+            s: Arc length (meters)
+
+        Returns:
+            omega: (3,) angular velocity in world frame (rad/s)
+
+        Note:
+            Sign follows right-hand rule: positive speed = CCW rotation
+            when looking down the normal vector. Negative speed (reversed
+            path) gives negative omega.
+        """
+        # omega = v / r = speed / radius, rotating about the plane normal
+        # Sign is automatic: negative speed -> negative omega
+        omega_magnitude = self.speed / self.radius
+        return omega_magnitude * self.normal
+
     def tangent(self, s: float) -> np.ndarray:
         """Unit tangent at arc length s.
 
