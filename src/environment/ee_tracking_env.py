@@ -390,30 +390,43 @@ class EETrackingEnv(gym.Env):
         - s_current tracks nearest point but can't exceed s_ideal (no lapping)
         - When behind: target waits for EE (forgiving for learning)
         - When caught up: target moves at constant speed (proper tracking)
+        - Supports both forward (positive speed) and reverse (negative speed) paths
 
         Note: s_ideal and s_current are tracked as unwrapped values (can exceed
         total_length for multiple laps). Only wrap when accessing path geometry.
         """
         ee_pos = self.data.xpos[self.ee_body_id]
 
+        # Check if path is reversed (negative speed)
+        is_reversed = self.path.speed < 0
+
         # Advance ideal position at constant path speed (unwrapped)
+        # Use signed speed for direction, magnitude for rate
         s_ideal_wrapped = self.s_ideal % self.path.total_length
-        target_speed = np.linalg.norm(self.path.velocity(s_ideal_wrapped))
-        self.s_ideal = self.s_ideal + target_speed * self.dt
+        speed_magnitude = np.linalg.norm(self.path.velocity(s_ideal_wrapped))
+        if is_reversed:
+            self.s_ideal = self.s_ideal - speed_magnitude * self.dt
+        else:
+            self.s_ideal = self.s_ideal + speed_magnitude * self.dt
 
         # Nearest-point search (allows catching up when behind)
         backward_allowance = 0.0
-        max_forward = 0.05  # Max 50mm forward per step
+        max_step = 0.05  # Max 50mm per step
         n_samples = 100
 
-        # Search from (current - small_back) to (current + max_forward)
-        # Use unwrapped s_current for search bounds
-        s_min = self.s_current - backward_allowance
-        s_max = self.s_current + max_forward
+        # Search direction depends on path direction
+        if is_reversed:
+            # Reversed: search backward from current
+            s_min = self.s_current - max_step
+            s_max = self.s_current + backward_allowance
+        else:
+            # Forward: search forward from current
+            s_min = self.s_current - backward_allowance
+            s_max = self.s_current + max_step
 
         s_samples = np.linspace(s_min, s_max, n_samples)
 
-        # Find nearest point, preferring smaller s for stability
+        # Find nearest point, preferring direction-appropriate s for stability
         min_dist = float('inf')
         best_s = self.s_current
         for s_raw in s_samples:
@@ -425,19 +438,24 @@ class EETrackingEnv(gym.Env):
             if dist < min_dist - 1e-6:
                 min_dist = dist
                 best_s = s_raw
-            elif abs(dist - min_dist) < 1e-6 and s_raw < best_s:
-                best_s = s_raw
+            elif abs(dist - min_dist) < 1e-6:
+                # Prefer smaller s for forward, larger s for reverse
+                if (not is_reversed and s_raw < best_s) or (is_reversed and s_raw > best_s):
+                    best_s = s_raw
 
         # Gradient refinement
         best_s = self._refine_nearest_s(ee_pos, best_s)
 
-        # Apply lookahead
+        # Apply lookahead (in direction of travel)
         lookahead = 0.005
-        s_candidate = best_s + lookahead
-
-        # KEY: Clip to s_ideal - can't advance beyond the "clock"
-        # Both are unwrapped, so comparison is valid across laps
-        self.s_current = min(s_candidate, self.s_ideal)
+        if is_reversed:
+            s_candidate = best_s - lookahead
+            # KEY: Clip to s_ideal - can't go beyond the "clock" (reversed)
+            self.s_current = max(s_candidate, self.s_ideal)
+        else:
+            s_candidate = best_s + lookahead
+            # KEY: Clip to s_ideal - can't advance beyond the "clock"
+            self.s_current = min(s_candidate, self.s_ideal)
 
     def _refine_nearest_s(self, ee_pos: np.ndarray, s_coarse: float, n_iters: int = 3) -> float:
         """Gradient-based refinement of nearest arc length.

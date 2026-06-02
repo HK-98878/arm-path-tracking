@@ -62,7 +62,7 @@ ppo:
   gae_lambda: 0.95
   clip_epsilon: 0.2
   n_steps: 2048
-  n_epochs: 4    # Reduced from 10 - fewer passes over same data
+  n_epochs: 4
   batch_size: 64
   ent_coef: 0.01          # Initial entropy coefficient
   ent_coef_min: 0.001     # Minimum entropy (floor for annealing)
@@ -74,8 +74,8 @@ ppo:
 # CAPS - smoothness in policy loss (more principled than reward penalties)
 caps:
   enabled: true
-  lambda_temporal: 0.5   # Penalize action changes between timesteps (5x increase)
-  lambda_spatial: 0.1    # Penalize sensitivity to observation noise (10x increase)
+  lambda_temporal: 0.5   # Penalize action changes between timesteps
+  lambda_spatial: 0.1    # Penalize sensitivity to observation noise
   spatial_noise_std: 0.01
 
 # Training

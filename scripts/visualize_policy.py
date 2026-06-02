@@ -51,6 +51,8 @@ def parse_args():
                        help='Use deterministic policy (mean action)')
     parser.add_argument('--feedforward-only', action='store_true',
                        help='Use zero actions (pure feedforward, no policy)')
+    parser.add_argument('--reverse-path', action='store_true',
+                       help='Reverse path direction (negative speed)')
     parser.add_argument('--render-width', type=int, default=640,
                        help='Render width')
     parser.add_argument('--render-height', type=int, default=480,
@@ -69,12 +71,17 @@ def setup_mujoco_gl(mode):
         print("Using MUJOCO_GL=egl (headless rendering)")
 
 
-def make_env(config, render_mode='rgb_array'):
+def make_env(config, render_mode='rgb_array', reverse_path=False):
     """Create environment from config (same as train_circle.py)."""
+    speed = config.path.speed
+    if reverse_path:
+        speed = -speed
+        print(f"  Reversed path direction: speed = {speed}")
+
     path = CirclePath(
         radius=config.path.radius,
         center=np.array(config.path.center),
-        speed=config.path.speed
+        speed=speed
     )
 
     env = EETrackingEnv(
@@ -259,7 +266,7 @@ def main():
     # Create environment
     print("Creating environment...")
     render_mode = 'rgb_array' if args.mode in ['video', 'headless'] else None
-    env = make_env(config, render_mode=render_mode)
+    env = make_env(config, render_mode=render_mode, reverse_path=args.reverse_path)
     print(f"  Observation space: {env.observation_space.shape}")
     print(f"  Action space: {env.action_space.shape}")
 
