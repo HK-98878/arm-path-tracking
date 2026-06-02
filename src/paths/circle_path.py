@@ -96,24 +96,27 @@ class CirclePath(Path):
         return self.speed * tangent
 
     def orientation(self, s: float) -> np.ndarray:
-        """RMF orientation at arc length s.
+        """Fixed downward orientation - EE Z-axis points down.
 
         Args:
-            s: Arc length
+            s: Arc length (unused - orientation is constant)
 
         Returns:
-            quaternion: (4,) RMF orientation [x, y, z, w]
+            quaternion: (4,) orientation [x, y, z, w]
 
         Note:
-            For a planar circle, RMF is straightforward:
-            - Tangent: velocity direction
-            - Normal: plane normal (constant)
-            - Binormal: tangent × normal
-        """
-        theta = s / self.radius
-        tangent = -np.sin(theta) * self.u + np.cos(theta) * self.v
+            For initial circle tracking, we use a fixed orientation:
+            - Z-axis points down (world -Z)
+            - X-axis points toward robot base (world -X)
+            - Y-axis points left (world +Y)
 
-        return rmf_for_planar_curve(tangent, self.normal)
+            This matches the Panda's natural EE orientation at q_init,
+            giving near-zero initial orientation error. The policy only
+            needs to maintain this pose, not track a rotating frame.
+
+            This is 180° rotation about the Y-axis.
+        """
+        return np.array([0.0, 1.0, 0.0, 0.0])  # xyzw: 180° about Y
 
     def curvature(self, s: float) -> float:
         """Curvature at arc length s.
@@ -129,24 +132,17 @@ class CirclePath(Path):
     def angular_velocity(self, s: float) -> np.ndarray:
         """Angular velocity at arc length s.
 
-        For a planar circle, the RMF frame rotates about the plane normal
-        at constant angular speed omega = speed / radius.
-
         Args:
-            s: Arc length (meters)
+            s: Arc length (meters, unused - orientation is fixed)
 
         Returns:
             omega: (3,) angular velocity in world frame (rad/s)
 
         Note:
-            Sign follows right-hand rule: positive speed = CCW rotation
-            when looking down the normal vector. Negative speed (reversed
-            path) gives negative omega.
+            With fixed downward orientation, there is no angular velocity.
+            The EE maintains a constant pose throughout the path.
         """
-        # omega = v / r = speed / radius, rotating about the plane normal
-        # Sign is automatic: negative speed -> negative omega
-        omega_magnitude = self.speed / self.radius
-        return omega_magnitude * self.normal
+        return np.zeros(3)
 
     def tangent(self, s: float) -> np.ndarray:
         """Unit tangent at arc length s.

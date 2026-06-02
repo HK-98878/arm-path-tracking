@@ -109,28 +109,28 @@ curriculum:
       sig_ori: 0.20
       w_ori: 0.15
       advance_threshold: 0.08  # 80mm
-      max_steps: 150000
+      max_steps: 500000
     # Stage 1: Moderate speed, tighten position
     - speed: 0.10
       sig_pos: 0.10
       sig_ori: 0.15
       w_ori: 0.25
       advance_threshold: 0.06  # 60mm
-      max_steps: 200000
+      max_steps: 500000
     # Stage 2: Faster, tighten both
     - speed: 0.15
       sig_pos: 0.05
       sig_ori: 0.12
       w_ori: 0.25
       advance_threshold: 0.04  # 40mm
-      max_steps: 200000
+      max_steps: 500000
     # Stage 3: Full speed, tight tolerances
     - speed: 0.20
       sig_pos: 0.02
       sig_ori: 0.10
       w_ori: 0.30
       advance_threshold: null  # Final stage
-      max_steps: 450000
+      max_steps: 1000000
   consecutive_evals: 5
   warmup_after_transition: 10000
   # LR and entropy warmup at stage transitions
