@@ -28,7 +28,7 @@ control:
 # Reward (Step 4: position + orientation + tangent progress)
 reward:
   w_pos: 1.0
-  w_ori: 0.25  # Low weight - for stability, not precision
+  w_ori: 2.0
   # Tangent progress: rewards velocity component along path direction
   # Uses tanh(progress) where progress = (ee_vel · tangent_dir) / target_speed
   # - progress=1.0 (keeping up): r_vel ≈ 0.76 * w_vel
@@ -41,7 +41,7 @@ reward:
   # sig_pos=0.15 gives strong gradient at small errors:
   #   at 50mm: 0.89, at 100mm: 0.64, at 150mm: 0.37
   sig_pos: 0.15
-  sig_ori: 0.15  # ~8.6 degrees - loose tolerance for stability
+  sig_ori: 0.15
   sig_vel: 0.15  # Not used for tangent progress (normalized by target_speed instead)
   # Linear fallback for position reward - ensures gradient exists at large errors
   # Beyond this distance, exponential reward is near-zero, linear provides recovery signal
