@@ -104,23 +104,23 @@ class DLSController:
         """
         return np.eye(self.n_joints) - j_pinv @ jacobian
 
-    def step(
+    def compute_dq(
         self,
         dx_ee_world: np.ndarray,
         q_current: np.ndarray,
         jacobian: np.ndarray,
         use_null_space: bool = True
     ) -> np.ndarray:
-        """Compute joint position command for desired EE twist, used per control step.
+        """Compute joint velocity/displacement for desired EE twist.
 
         Args:
             dx_ee_world: (6,) desired EE twist in world frame [v; ω] * dt
-            q_current: (n,) current joint positions
+            q_current: (n,) current joint positions (for null-space calculation)
             jacobian: (6, n) Jacobian matrix (world frame)
             use_null_space: Whether to use null-space for limit avoidance
 
         Returns:
-            q_cmd: (n,) commanded joint positions
+            dq: (n,) joint displacement (NOT the new position, just the delta)
         """
         # Adaptive damping based on manipulability
         lambda_sq = self.adaptive_damping(jacobian)
@@ -141,8 +141,28 @@ class DLSController:
         else:
             dq_null = np.zeros(self.n_joints)
 
-        # Final command: current + task + null-space
-        q_cmd = q_current + dq_task + dq_null
+        return dq_task + dq_null
+
+    def step(
+        self,
+        dx_ee_world: np.ndarray,
+        q_current: np.ndarray,
+        jacobian: np.ndarray,
+        use_null_space: bool = True
+    ) -> np.ndarray:
+        """Compute joint position command for desired EE twist, used per control step.
+
+        Args:
+            dx_ee_world: (6,) desired EE twist in world frame [v; ω] * dt
+            q_current: (n,) current joint positions
+            jacobian: (6, n) Jacobian matrix (world frame)
+            use_null_space: Whether to use null-space for limit avoidance
+
+        Returns:
+            q_cmd: (n,) commanded joint positions
+        """
+        dq = self.compute_dq(dx_ee_world, q_current, jacobian, use_null_space)
+        q_cmd = q_current + dq
         return np.clip(q_cmd, self.q_min, self.q_max)
 
     def get_info(

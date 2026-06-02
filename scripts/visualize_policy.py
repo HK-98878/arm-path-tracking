@@ -30,8 +30,8 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description='Visualize trained RL policy'
     )
-    parser.add_argument('--checkpoint', type=str, required=True,
-                       help='Path to checkpoint .pt file')
+    parser.add_argument('--checkpoint', type=str, default=None,
+                       help='Path to checkpoint .pt file (optional if --feedforward-only)')
     parser.add_argument('--config', type=str, required=True,
                        help='Path to config YAML file')
     parser.add_argument('--mode', type=str, default='video',
@@ -49,6 +49,8 @@ def parse_args():
                        help='Video frame rate')
     parser.add_argument('--deterministic', action='store_true', default=True,
                        help='Use deterministic policy (mean action)')
+    parser.add_argument('--feedforward-only', action='store_true',
+                       help='Use zero actions (pure feedforward, no policy)')
     parser.add_argument('--render-width', type=int, default=640,
                        help='Render width')
     parser.add_argument('--render-height', type=int, default=480,
@@ -114,7 +116,7 @@ def create_agent(config, env, device='cpu'):
 
 
 def run_episode(env, agent, obs_rms, video_recorder=None,
-                episode_recorder=None, deterministic=True):
+                episode_recorder=None, deterministic=True, feedforward_only=False):
     """Run single episode with optional recording.
 
     Returns:
@@ -130,7 +132,10 @@ def run_episode(env, agent, obs_rms, video_recorder=None,
     step = 0
     while not done:
         # Select action
-        action, _, _ = agent.select_action(obs, deterministic=deterministic)
+        if feedforward_only:
+            action = np.zeros(env.action_space.shape[0])
+        else:
+            action, _, _ = agent.select_action(obs, deterministic=deterministic)
 
         # Get current state for recording
         state = env._get_robot_state()
@@ -237,8 +242,11 @@ def main():
 
     # Determine output directory
     if args.output_dir is None:
-        checkpoint_dir = Path(args.checkpoint).parent
-        args.output_dir = checkpoint_dir / 'visualizations'
+        if args.checkpoint:
+            checkpoint_dir = Path(args.checkpoint).parent
+            args.output_dir = checkpoint_dir / 'visualizations'
+        else:
+            args.output_dir = Path('outputs/feedforward_test')
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -255,24 +263,31 @@ def main():
     print(f"  Observation space: {env.observation_space.shape}")
     print(f"  Action space: {env.action_space.shape}")
 
-    # Create agent
-    print("\nLoading checkpoint...")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    agent = create_agent(config, env, device=device)
+    # Create agent and load checkpoint (unless feedforward-only)
     obs_rms = RunningMeanStd(shape=env.observation_space.shape)
+    agent = None
 
-    # Load checkpoint
-    if not os.path.exists(args.checkpoint):
-        raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
+    if args.feedforward_only:
+        print("\nSkipping checkpoint load (feedforward-only mode)")
+    else:
+        if args.checkpoint is None:
+            raise ValueError("--checkpoint required unless using --feedforward-only")
+        if not os.path.exists(args.checkpoint):
+            raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
 
-    agent.load(args.checkpoint, obs_rms=obs_rms)
-    print(f"  Loaded: {args.checkpoint}")
-    print(f"  Timesteps trained: {agent.num_timesteps:,}")
+        print("\nLoading checkpoint...")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        agent = create_agent(config, env, device=device)
+        agent.load(args.checkpoint, obs_rms=obs_rms)
+        print(f"  Loaded: {args.checkpoint}")
+        print(f"  Timesteps trained: {agent.num_timesteps:,}")
 
     # Initialize components
     data_storage = EpisodeDataStorage() if args.save_data else None
 
     # Run episodes
+    if args.feedforward_only:
+        print(f"\n*** FEEDFORWARD-ONLY MODE: Using zero actions (no policy) ***")
     print(f"\nRunning {args.episodes} episode(s)...")
     for ep in range(args.episodes):
         print(f"\nEpisode {ep + 1}/{args.episodes}")
@@ -305,13 +320,14 @@ def main():
             episode_data = run_episode(
                 env, agent, obs_rms,
                 episode_recorder=episode_recorder,
-                deterministic=args.deterministic
+                deterministic=args.deterministic,
+                feedforward_only=args.feedforward_only
             )
-            plotter_traj.plot_3d_trajectory(
-                episode_data['ee_positions'], # type: ignore
-                episode_data['target_positions'], # type: ignore
-                save_path=None,
-                show=True
+            # Interactive playback with slider
+            plotter_traj.plot_3d_playback(
+                episode_data['ee_positions'],  # type: ignore
+                episode_data['target_positions'],  # type: ignore
+                dt=env.dt
             )
         else:
             # Video or headless mode
@@ -319,7 +335,8 @@ def main():
                 env, agent, obs_rms,
                 video_recorder=video_recorder,
                 episode_recorder=episode_recorder,
-                deterministic=args.deterministic
+                deterministic=args.deterministic,
+                feedforward_only=args.feedforward_only
             )
 
         # Save video

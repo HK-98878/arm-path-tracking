@@ -190,6 +190,9 @@ class EETrackingEnv(gym.Env):
         self.step_count = 0
         self.prev_action = np.zeros(6, dtype=np.float32)
 
+        # Initialize desired joint position for integrated position control
+        self.q_desired = self.data.qpos[:self.n_joints].copy()
+
         # Initialize ideal path position (advances at constant speed, caps s_current)
         self.s_ideal = self.s_current
 
@@ -219,17 +222,21 @@ class EETrackingEnv(gym.Env):
         # Convert action to target EE twist (residual-feedforward)
         dx_ee_world = self._action_to_ee_twist(action)
 
-        # DLS layer: EE twist -> joint command
+        # DLS layer: EE twist -> joint velocity command
         state = self._get_robot_state()
-        q_cmd = self.dls_controller.step(
+        dq = self.dls_controller.compute_dq(
             dx_ee_world=dx_ee_world,
             q_current=state.joint_pos,
             jacobian=state.jacobian,
             use_null_space=True
         )
 
+        # Integrate desired position (not based on current pos, to avoid lag)
+        self.q_desired = self.q_desired + dq
+        self.q_desired = np.clip(self.q_desired, self.q_min, self.q_max)
+
         # Execute command (position control via MuJoCo actuators)
-        self.data.ctrl[:self.n_joints] = q_cmd
+        self.data.ctrl[:self.n_joints] = self.q_desired
 
         # Step simulation
         mujoco.mj_step(self.model, self.data)
@@ -395,7 +402,7 @@ class EETrackingEnv(gym.Env):
         self.s_ideal = self.s_ideal + target_speed * self.dt
 
         # Nearest-point search (allows catching up when behind)
-        backward_allowance = 0.005
+        backward_allowance = 0.0
         max_forward = 0.05  # Max 50mm forward per step
         n_samples = 100
 
