@@ -1,147 +1,143 @@
-# Step 1: Circle Baseline Configuration
-# Position tracking only, no CAPS, no velocity matching
+# Run 40: Reduced action_scale + gradual w_ori
+# Changes from run 39:
+#   - action_scale: 0.02 -> 0.005 (4x reduction for smoother corrections)
+#   - w_ori: gradual ramp 0.3->0.5->0.7->1.0 (not jumping to 2.0)
+#   - sig_ori: less aggressive tightening (0.20->0.15->0.12->0.10)
+#   - orientation_modes: fixed only (no rock_x/rock_y until baseline is solid)
 
 # Environment
 env:
   model_path: "src/models/mujoco_menagerie/franka_emika_panda/panda_nohand.xml"
   dt: 0.01  # 100 Hz control
   max_episode_steps: 1000
-  ee_body_name: "attachment"  # End-effector attachment point
+  ee_body_name: "attachment"
 
 # Path
 path:
   type: circle
-  radius: 0.15  # meters
-  center: [0.32, 0.0, 0.52]  # [x, y, z] - centered so EE starts ON the circle
-  speed: 0.1  # m/s
-  # Orientation variation defaults (can be overridden per curriculum stage)
-  orientation_modes: ['fixed']  # Options: fixed, rock_x, rock_y
-  rock_amplitude: 0.175  # ~10 degrees max tilt
-  n_oscillations: 2      # Oscillations per lap
+  radius: 0.15
+  center: [0.32, 0.0, 0.52]
+  speed: 0.1
+  # Fixed orientation only - add variation after baseline is smooth
+  orientation_modes: ['fixed']
+  rock_amplitude: 0.175
+  n_oscillations: 2
 
 # Control
 control:
-  # Design doc recommends 0.02 for linear - keeps residual ~10x feedforward (not 43x)
-  action_scale: [0.02, 0.02, 0.02, 0.05, 0.05, 0.05]  # [lin_x, lin_y, lin_z, ang_x, ang_y, ang_z]
+  # REDUCED: 0.02 -> 0.005 (4x reduction)
+  # 5mm linear authority is still 156x drift rate - plenty for smooth correction
+  # 20mrad angular keeps some orientation correction ability
+  action_scale: [0.005, 0.005, 0.005, 0.02, 0.02, 0.02]
   dls:
     k_limit: 0.5
     lambda_min: 0.0001
     lambda_max: 0.1
     manip_threshold: 0.05
 
-# Reward (Step 4: position + orientation + tangent progress)
+# Reward
 reward:
   w_pos: 1.0
-  w_ori: 2.0
-  # Tangent progress: rewards velocity component along path direction
-  # Uses tanh(progress) where progress = (ee_vel · tangent_dir) / target_speed
-  # - progress=1.0 (keeping up): r_vel ≈ 0.76 * w_vel
-  # - progress>1.0 (catching up): higher reward, no penalty for going fast
-  # - progress<0 (going backwards): negative reward
-  # GATED by position error - fades to 0 beyond vel_gate_max to focus on correction
+  w_ori: 1.0  # Global fallback - but curriculum stages override this
   w_vel: 0.5
-  w_action_rate: 0.1    # Adaptive penalty - scaled by pos_quality (low when off-path)
-  w_joint_vel: 0.001   # Adaptive penalty - scaled by pos_quality
-  # sig_pos=0.15 gives strong gradient at small errors:
-  #   at 50mm: 0.89, at 100mm: 0.64, at 150mm: 0.37
+  w_action_rate: 0.1
+  w_joint_vel: 0.001
   sig_pos: 0.15
   sig_ori: 0.15
-  sig_vel: 0.15  # Not used for tangent progress (normalized by target_speed instead)
-  # Linear fallback for position reward - ensures gradient exists at large errors
-  # Beyond this distance, exponential reward is near-zero, linear provides recovery signal
-  pos_linear_fallback_max: 0.5  # 500mm
-  # Linear fallback for orientation reward - ensures gradient at large orientation errors
-  ori_linear_fallback_max: 3.14  # π rad (180 degrees)
-  # Gate for velocity reward - beyond this, focus purely on position correction
-  vel_gate_max: 0.15  # 150mm - moderate gating
-  # Velocity reward type:
-  #   "tangent" - reward velocity along path tangent (can encourage shortcuts)
-  #   "arc_length" - reward arc-length progress ds/dt (rewards keeping up, not shortcuts)
+  sig_vel: 0.15
+  pos_linear_fallback_max: 0.5
+  ori_linear_fallback_max: 3.14
+  vel_gate_max: 0.15
   vel_reward_type: arc_length
 
 # PPO
 ppo:
-  learning_rate: 0.00003  # Initial LR
-  lr_min: 0.000005        # Minimum LR (floor for decay)
-  lr_decay: linear        # Decay type: linear decay over training
+  learning_rate: 0.00003
+  lr_min: 0.000005
+  lr_decay: linear
   gamma: 0.99
   gae_lambda: 0.95
   clip_epsilon: 0.2
   n_steps: 2048
   n_epochs: 4
   batch_size: 64
-  ent_coef: 0.01          # Initial entropy coefficient
-  ent_coef_min: 0.001     # Minimum entropy (floor for annealing)
-  ent_decay: linear       # Decay type: linear annealing over training
+  ent_coef: 0.01
+  ent_coef_min: 0.001
+  ent_decay: linear
   vf_coef: 0.5
   max_grad_norm: 0.5
   hidden_sizes: [256, 256]
 
-# CAPS - smoothness in policy loss (more principled than reward penalties)
+# CAPS
 caps:
   enabled: true
-  lambda_temporal: 0.5   # Penalize action changes between timesteps
-  lambda_spatial: 0.1    # Penalize sensitivity to observation noise
+  lambda_temporal: 0.5
+  lambda_spatial: 0.1
   spatial_noise_std: 0.01
 
 # Training
 training:
-  total_timesteps: 1000000  # 1M steps
-  eval_frequency: 10000     # Evaluate every 10k steps
-  save_frequency: 50000     # Save checkpoint every 50k steps
-  log_frequency: 1000       # Log metrics every 1k steps
-  num_eval_episodes: 5      # Episodes for evaluation
-  normalization_warmup: 10000  # Freeze obs/reward normalization after this many steps
-  bidirectional: true       # Randomize path direction per episode
+  total_timesteps: 1000000
+  eval_frequency: 10000
+  save_frequency: 50000
+  log_frequency: 1000
+  num_eval_episodes: 5
+  normalization_warmup: 10000
+  bidirectional: true
 
 # Logging
 logging:
   output_dir: "outputs/circle_baseline"
   tensorboard: true
-  save_video: false  # Headless, no video
+  save_video: false
 
-# Random seed
 seed: 42
 
-# Curriculum learning
+# Curriculum - KEY CHANGES:
+#   1. w_ori gradual: 0.3 -> 0.5 -> 0.7 -> 1.0 (not 2.0)
+#   2. sig_ori gradual: 0.20 -> 0.15 -> 0.12 -> 0.10 (not 0.05)
+#   3. All stages have explicit w_ori (no fallback to global)
+#   4. Fixed orientation only
 curriculum:
   enabled: true
   stages:
-    # Stage 0: Slow, loose tolerances, fixed orientation only
+    # Stage 0: Slow, loose tolerances, low orientation weight
     - speed: 0.05
       sig_pos: 0.15
       sig_ori: 0.20
-      w_ori: 0.15
+      w_ori: 0.3
       orientation_modes: ['fixed']
       advance_threshold: 0.08  # 80mm
       max_steps: 500000
-    # Stage 1: Moderate speed, introduce rock_x
+
+    # Stage 1: Moderate speed, slightly tighter
     - speed: 0.10
       sig_pos: 0.10
       sig_ori: 0.15
-      w_ori: 0.25
-      orientation_modes: ['fixed', 'rock_x']
+      w_ori: 0.5
+      orientation_modes: ['fixed']
       advance_threshold: 0.06  # 60mm
       max_steps: 500000
-    # Stage 2: Faster, add rock_y (all modes)
+
+    # Stage 2: Faster, continue tightening
     - speed: 0.15
       sig_pos: 0.05
       sig_ori: 0.12
-      w_ori: 0.25
-      orientation_modes: ['fixed', 'rock_x', 'rock_y']
+      w_ori: 0.7
+      orientation_modes: ['fixed']
       advance_threshold: 0.04  # 40mm
       max_steps: 500000
-    # Stage 3: Full speed, all modes, tight tolerances
+
+    # Stage 3: Full speed, tightest (but not extreme)
     - speed: 0.20
       sig_pos: 0.02
-      sig_ori: 0.10
-      w_ori: 0.30
-      orientation_modes: ['fixed', 'rock_x', 'rock_y']
-      advance_threshold: null  # Final stage
+      sig_ori: 0.10  # Not 0.05 - keep some slack
+      w_ori: 1.0     # Not 2.0 - balanced with position
+      orientation_modes: ['fixed']
+      advance_threshold: null
       max_steps: 1000000
+
   consecutive_evals: 5
   warmup_after_transition: 10000
-  # LR and entropy warmup at stage transitions
-  # Temporarily boost both to help adapt to harder task, then decay again
-  lr_warmup_multiplier: 2.0      # 2x LR boost after transition
-  ent_warmup_multiplier: 2.0     # 2x entropy boost after transition
+  lr_warmup_multiplier: 2.0
+  ent_warmup_multiplier: 2.0
