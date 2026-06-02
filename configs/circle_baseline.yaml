@@ -1,9 +1,11 @@
-# Run 40: Reduced action_scale + gradual w_ori
-# Changes from run 39:
-#   - action_scale: 0.02 -> 0.005 (4x reduction for smoother corrections)
+# Run 41: Moderate action_scale reduction + gradual w_ori
+# Changes from run 40:
+#   - action_scale: 0.005 -> 0.01 (2x reduction from original, not 4x)
+#     Run 40 showed 5mm was too weak - couldn't track at higher speeds
+# Kept from run 40:
 #   - w_ori: gradual ramp 0.3->0.5->0.7->1.0 (not jumping to 2.0)
-#   - sig_ori: less aggressive tightening (0.20->0.15->0.12->0.10)
-#   - orientation_modes: fixed only (no rock_x/rock_y until baseline is solid)
+#   - sig_ori: gradual (0.20->0.15->0.12->0.10)
+#   - orientation_modes: fixed only
 
 # Environment
 env:
@@ -25,10 +27,10 @@ path:
 
 # Control
 control:
-  # REDUCED: 0.02 -> 0.005 (4x reduction)
-  # 5mm linear authority is still 156x drift rate - plenty for smooth correction
-  # 20mrad angular keeps some orientation correction ability
-  action_scale: [0.005, 0.005, 0.005, 0.02, 0.02, 0.02]
+  # REDUCED: 0.02 -> 0.01 (2x reduction, not 4x)
+  # 10mm linear: middle ground between oscillation (20mm) and too weak (5mm)
+  # 30mrad angular: slightly reduced from 50mrad
+  action_scale: [0.01, 0.01, 0.01, 0.03, 0.03, 0.03]
   dls:
     k_limit: 0.5
     lambda_min: 0.0001
