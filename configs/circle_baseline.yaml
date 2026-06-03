@@ -1,8 +1,8 @@
-# Run 44: Low w_ori early (position first) + higher w_ori late (fix orientation drift)
-# Run 43 issue: orientation drifts in 2nd half of circle (low-manipulability region)
-# Fix: Keep w_ori low in stages 0-1 (position learns), increase in stages 2-3 (fix ori)
-# Also tighten sig_ori slightly in final stage for sharper gradient at small errors
-# Kept: action_scale 0.01, loose sig_ori early, orientation_modes fixed only
+# Run 45: Run 43 w_ori + tighter sig_ori (sharper gradient, not higher priority)
+# Run 44 issue: w_ori=1.3 collapsed position entirely (130mm)
+# Run 43 was best balance (4.4mm pos, 18.5° ori) - keep its w_ori
+# Fix orientation drift via tighter sig_ori (sharper gradient) not higher w_ori
+# Kept: action_scale 0.01, orientation_modes fixed only
 
 # Environment
 env:
@@ -100,38 +100,38 @@ seed: 42
 curriculum:
   enabled: true
   stages:
-    # Stage 0: Low w_ori - position learns first
+    # Stage 0: Loose sig_ori for gradient at large errors
     - speed: 0.05
       sig_pos: 0.15
-      sig_ori: 0.50  # Loose for gradient
-      w_ori: 0.3     # Low - position priority
+      sig_ori: 0.50
+      w_ori: 0.3
       orientation_modes: ['fixed']
       advance_threshold: 0.08
       max_steps: 500000
 
-    # Stage 1: Still low w_ori - position still priority
+    # Stage 1: Start tightening sig_ori
     - speed: 0.10
       sig_pos: 0.10
-      sig_ori: 0.30
-      w_ori: 0.5     # Still relatively low
+      sig_ori: 0.25  # Tighter than run 43's 0.30
+      w_ori: 0.5
       orientation_modes: ['fixed']
       advance_threshold: 0.06
       max_steps: 500000
 
-    # Stage 2: Higher w_ori - start fixing orientation drift
+    # Stage 2: Tighter sig_ori for sharper gradient
     - speed: 0.15
       sig_pos: 0.05
-      sig_ori: 0.20
-      w_ori: 0.9     # INCREASED: was 0.7
+      sig_ori: 0.15  # Tighter than run 43's 0.20
+      w_ori: 0.7     # Back to run 43 value (not 0.9)
       orientation_modes: ['fixed']
       advance_threshold: 0.04
       max_steps: 500000
 
-    # Stage 3: High w_ori - orientation must be maintained
+    # Stage 3: Tight sig_ori for precise orientation, w_ori=1.0 (not 1.3)
     - speed: 0.20
       sig_pos: 0.02
-      sig_ori: 0.12  # TIGHTENED: was 0.15, sharper gradient at small errors
-      w_ori: 1.3     # INCREASED: was 1.0, fix drift in low-manip region
+      sig_ori: 0.10  # Tight: sharper gradient at small ori errors
+      w_ori: 1.0     # Back to run 43 value (not 1.3)
       orientation_modes: ['fixed']
       advance_threshold: null
       max_steps: 1000000
