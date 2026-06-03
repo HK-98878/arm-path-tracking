@@ -34,11 +34,12 @@ control:
     lambda_max: 0.1
     manip_threshold: 0.05
     # Separate damping for linear vs angular DOFs
-    # Prevents angular corrections from being unnecessarily damped
-    # when only linear manipulability is low
+    # Run 46 (threshold_angular=1.0): Good in low-manip, bad in high-manip (54° overall)
+    # Run 47: Try partial angular damping - threshold=3.0 provides some regularization
+    # in high-manip (ang_manip=2.88) while keeping minimal damping in low-manip (ang_manip=3.37)
     separate_lin_ang_damping: true
-    manip_threshold_linear: 0.025  # Linear manip range: 0.027-0.12, below min to avoid over-damping
-    manip_threshold_angular: 1.0   # Angular manip range: 2.7-3.5 (rarely triggers)
+    manip_threshold_linear: 0.025  # Linear manip range: 0.027-0.12
+    manip_threshold_angular: 3.0   # Partial damping: high-manip gets some, low-manip gets minimal
 
 # Reward
 reward:
