@@ -8,7 +8,7 @@ def compute_manipulability(jacobian: np.ndarray) -> float:
     """Compute Yoshikawa manipulability measure.
 
     Args:
-        jacobian: (6, n) Jacobian matrix
+        jacobian: (m, n) Jacobian matrix (typically 6xn or 3xn)
 
     Returns:
         Manipulability scalar (>= 0)
@@ -24,6 +24,28 @@ def compute_manipulability(jacobian: np.ndarray) -> float:
     # Ensure numerical stability (det might be slightly negative due to rounding)
     det = max(0.0, det)
     return np.sqrt(det)
+
+
+def compute_manipulability_linear_angular(jacobian: np.ndarray) -> Tuple[float, float]:
+    """Compute separate manipulability for linear and angular parts.
+
+    Args:
+        jacobian: (6, n) Jacobian matrix where rows 0-2 are linear, 3-5 are angular
+
+    Returns:
+        Tuple of (linear_manipulability, angular_manipulability)
+
+    Note:
+        This allows detecting when linear vs angular motions are constrained
+        independently. Useful for applying separate damping.
+    """
+    J_linear = jacobian[:3, :]
+    J_angular = jacobian[3:, :]
+
+    manip_linear = compute_manipulability(J_linear)
+    manip_angular = compute_manipulability(J_angular)
+
+    return manip_linear, manip_angular
 
 
 def compute_condition_number(jacobian: np.ndarray) -> float:
