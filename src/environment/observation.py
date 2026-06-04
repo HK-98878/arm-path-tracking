@@ -103,7 +103,9 @@ class ObservationBuilder:
             ori_err_ee = np.zeros(3)
 
         # (c) Lookahead points in EE frame
-        lookahead_world = path.lookahead_points(s_current, self.lookahead_n, self.lookahead_ds)
+        # ds must be signed: for reversed paths (negative speed), lookahead goes toward lower s
+        ds_signed = self.lookahead_ds * np.sign(getattr(path, 'speed', 1.0))
+        lookahead_world = path.lookahead_points(s_current, self.lookahead_n, ds_signed)
         lookahead_ee = []
         for p_k in lookahead_world:
             # Relative to current EE position, in EE frame
