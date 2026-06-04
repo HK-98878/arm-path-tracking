@@ -42,7 +42,9 @@ class EETrackingEnv(gym.Env):
         render_mode: Optional[str] = None,
         dls_config: Optional[dict] = None,
         include_orientation: bool = False,
-        lookahead_ds: float = 0.02
+        lookahead_ds: float = 0.02,
+        randomize_start_phase: bool = False,
+        phase_offset_max: float = 0.1
     ):
         """Initialize environment.
 
@@ -109,6 +111,9 @@ class EETrackingEnv(gym.Env):
             joint_limits=(self.q_min, self.q_max),
             lookahead_ds=lookahead_ds
         )
+
+        self.randomize_start_phase = randomize_start_phase
+        self.phase_offset_max = phase_offset_max
 
         # Reward computer
         self.reward_computer = TrackingReward(**reward_config)
@@ -184,6 +189,15 @@ class EETrackingEnv(gym.Env):
 
         closest_idx = np.argmin(errors)
         self.s_current = s_samples[closest_idx]
+
+        # Shift the arc-length clock forward in the direction of travel so the
+        # policy trains from varied phases, not always the same starting offset.
+        # Forward-only: backward offsets would snap s_current via the min/max cap.
+        if self.randomize_start_phase and self.phase_offset_max > 0:
+            speed_sign = np.sign(self.path.speed) if self.path.speed != 0 else 1.0
+            max_arc = self.phase_offset_max * self.path.total_length
+            arc_offset = self.np_random.uniform(0.0, max_arc)
+            self.s_current = self.s_current + speed_sign * arc_offset
 
         # Print initial EE position for debugging (first reset only)
         if not hasattr(self, '_printed_init_pos'):

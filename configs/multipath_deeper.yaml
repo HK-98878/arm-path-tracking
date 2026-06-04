@@ -1,19 +1,21 @@
-# Run 49: Multi-path (circle + figure-8) with deeper network [256,256,256]
-# Run 48: [256,256] plateaued at ~26mm on both paths (capacity ceiling)
-# Changes vs run 48:
-#   - hidden_sizes [256,256] -> [256,256,256] (more capacity for curvature diversity)
-#   - lookahead_ds 0.02 -> 0.04m (20cm horizon vs 10cm, anticipate figure-8 inflection earlier)
-#   - lookahead direction now speed-signed (fix: reversed paths were shown wrong-direction lookahead)
-#   - max_episode_steps 1000 -> 3000 (~6 laps): forces policy to maintain stable orbit, not just converge
-#   - stage 3 sig_pos 0.02 -> 0.01: stronger gradient at small errors (run 49 plateaued at 11mm)
+# Run 51: Bounded phase offset for orbit maintenance
+# Run 50: FAILED - max_episode_steps 3000 caused position divergence to 183mm
+#   - 3x fewer gradient updates; orientation dominated; policy converged to YZ-oval local optimum
+# Run 49: [256,256,256], 1000 steps - circle 25mm (spiral), figure-8 4mm (excellent)
+# Changes vs run 49:
+#   - randomize_start_phase: true + phase_offset_max 0.1 (shift clock 0-10% arc forward per episode)
+#   - max_episode_steps reverted 3000 -> 1000
+#   - stage 3 sig_pos reverted 0.01 -> 0.02 (run 49 achieved 4mm with 0.02)
 
 # Environment
 env:
   model_path: "src/models/mujoco_menagerie/franka_emika_panda/panda_nohand.xml"
   dt: 0.01  # 100 Hz control
-  max_episode_steps: 3000  # ~6 laps at stage 3 speed - forces stable orbit, not just convergence
+  max_episode_steps: 1000
   ee_body_name: "attachment"
   lookahead_ds: 0.04  # 20cm horizon (was 0.02/10cm) - anticipate figure-8 inflection earlier
+  randomize_start_phase: true
+  phase_offset_max: 0.1  # 0-10% arc forward offset per episode; max chord ~92mm for circle
 
 # Path
 path:
@@ -145,9 +147,9 @@ curriculum:
       advance_threshold: 0.04
       max_steps: 500000
 
-    # Stage 3: 50/50 path mix, tighter sig_pos for sharp gradient at small errors
+    # Stage 3: 50/50 path mix
     - speed: 0.20
-      sig_pos: 0.01  # Tighter: run 49 showed 11mm plateau, need stronger pull below 10mm
+      sig_pos: 0.02  # Same as run 49 (which achieved 4mm on figure-8)
       sig_ori: 0.10  # Tight: sharper gradient at small ori errors
       w_ori: 1.0     # Back to run 43 value (not 1.3)
       orientation_modes: ['fixed']
