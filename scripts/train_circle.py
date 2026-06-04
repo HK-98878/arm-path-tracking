@@ -21,7 +21,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.environment.ee_tracking_env import EETrackingEnv
-from src.paths.circle_path import CirclePath
+from src.paths import create_path, sample_path_type
 from src.rl.ppo import PPO
 from src.utils.config import load_config
 from src.utils.metrics import compute_jitter_metrics, compute_tracking_error_metrics
@@ -202,13 +202,14 @@ def check_for_spike(current_error, previous_error, threshold_ratio=2.0):
     return False
 
 
-def make_env(config, bidirectional=False, include_orientation=False):
+def make_env(config, bidirectional=False, include_orientation=False, path_type='circle'):
     """Create environment from config.
 
     Args:
         config: Configuration object
         bidirectional: If True, randomly negate speed for this env
         include_orientation: Whether to enable orientation control
+        path_type: Type of path to create ('circle' or 'figure8')
 
     Returns:
         EETrackingEnv instance
@@ -223,14 +224,15 @@ def make_env(config, bidirectional=False, include_orientation=False):
     rock_amplitude = getattr(config.path, 'rock_amplitude', 0.175)
     n_oscillations = getattr(config.path, 'n_oscillations', 2)
 
-    # Create path
-    path = CirclePath(
-        radius=config.path.radius,
+    # Create path using factory
+    path = create_path(
+        path_type=path_type,
         center=np.array(config.path.center),
+        radius=config.path.radius,
         speed=speed,
         orientation_modes=orientation_modes,
         rock_amplitude=rock_amplitude,
-        n_oscillations=n_oscillations
+        n_oscillations=n_oscillations,
     )
 
     # Create environment
@@ -250,16 +252,18 @@ def make_env(config, bidirectional=False, include_orientation=False):
     return env
 
 
-def make_env_with_stage(config, stage_params, bidirectional=False):
+def make_env_with_stage(config, stage_params, bidirectional=False, path_type_override=None):
     """Create environment with curriculum stage parameters.
 
     Args:
         config: Configuration object
-        stage_params: dict with speed, sig_pos, and optionally sig_ori, w_ori, orientation_modes
+        stage_params: dict with speed, sig_pos, and optionally sig_ori, w_ori,
+                      orientation_modes, path_types, path_weights
         bidirectional: If True, randomly negate speed
+        path_type_override: If provided, use this path type instead of sampling
 
     Returns:
-        EETrackingEnv instance
+        EETrackingEnv instance, selected path_type
     """
     # Get speed from stage params
     speed = stage_params.get('speed', config.path.speed)
@@ -276,14 +280,23 @@ def make_env_with_stage(config, stage_params, bidirectional=False):
     rock_amplitude = getattr(config.path, 'rock_amplitude', 0.175)
     n_oscillations = getattr(config.path, 'n_oscillations', 2)
 
-    # Create path with overridden speed and orientation modes
-    path = CirclePath(
-        radius=config.path.radius,
+    # Select path type from pool (or use override)
+    if path_type_override is not None:
+        path_type = path_type_override
+    else:
+        path_types = stage_params.get('path_types', ['circle'])
+        path_weights = stage_params.get('path_weights', None)
+        path_type = sample_path_type(path_types, path_weights)
+
+    # Create path using factory
+    path = create_path(
+        path_type=path_type,
         center=np.array(config.path.center),
+        radius=config.path.radius,
         speed=speed,
         orientation_modes=orientation_modes,
         rock_amplitude=rock_amplitude,
-        n_oscillations=n_oscillations
+        n_oscillations=n_oscillations,
     )
 
     # Build reward config with stage overrides
@@ -312,7 +325,7 @@ def make_env_with_stage(config, stage_params, bidirectional=False):
         include_orientation=include_orientation
     )
 
-    return env
+    return env, path_type
 
 
 def evaluate(env, agent, obs_rms, num_episodes=5):
@@ -441,6 +454,57 @@ def evaluate(env, agent, obs_rms, num_episodes=5):
     return metrics
 
 
+def evaluate_multi_path(config, stage_params, agent, obs_rms, num_episodes_per_path=3):
+    """Evaluate agent on each path type in the current stage's pool.
+
+    Args:
+        config: Configuration object
+        stage_params: Current curriculum stage parameters
+        agent: PPO agent
+        obs_rms: Observation normalization statistics
+        num_episodes_per_path: Episodes to run per path type
+
+    Returns:
+        Dictionary with aggregate metrics and per-path breakdown
+    """
+    path_types = stage_params.get('path_types', ['circle'])
+
+    per_path_metrics = {}
+    all_pos_errors = []
+    all_ori_errors = []
+
+    for path_type in path_types:
+        # Create env with specific path type
+        env, _ = make_env_with_stage(
+            config, stage_params, bidirectional=False,
+            path_type_override=path_type
+        )
+
+        # Run evaluation
+        metrics = evaluate(env, agent, obs_rms, num_episodes_per_path)
+        per_path_metrics[path_type] = metrics
+        env.close()
+
+        # Collect for aggregation
+        all_pos_errors.append(metrics['pos_error_mean'])
+        all_ori_errors.append(metrics['ori_error_mean'])
+
+    # Aggregate metrics (average across path types)
+    aggregate = {
+        'pos_error_mean': float(np.mean(all_pos_errors)),
+        'ori_error_mean': float(np.mean(all_ori_errors)),
+        'per_path': per_path_metrics,
+    }
+
+    # Copy first path type's other metrics for compatibility
+    first_path = path_types[0]
+    for key in per_path_metrics[first_path]:
+        if key not in aggregate:
+            aggregate[key] = per_path_metrics[first_path][key]
+
+    return aggregate
+
+
 def train(config):
     """Main training loop.
 
@@ -490,8 +554,9 @@ def train(config):
     if curriculum.enabled:
         stage_params = curriculum.get_current_params()
         env.close()
-        env = make_env_with_stage(config, stage_params, bidirectional=bidirectional)
+        env, current_path_type = make_env_with_stage(config, stage_params, bidirectional=bidirectional)
         print(f"  Curriculum enabled - Stage 0: {stage_params}")
+        print(f"  Initial path type: {current_path_type}")
     else:
         print("  Curriculum disabled - using config path speed")
 
@@ -630,7 +695,23 @@ def train(config):
             print(f"Evaluation at timestep {timestep + 1:,}")
             print('='*60)
 
-            eval_metrics = evaluate(env, agent, obs_rms, config.training.num_eval_episodes)
+            # Get current stage params for multi-path evaluation
+            stage_params = curriculum.get_current_params() if curriculum.enabled else {}
+            path_types = stage_params.get('path_types', ['circle'])
+
+            if len(path_types) > 1:
+                # Multi-path evaluation
+                eval_metrics = evaluate_multi_path(
+                    config, stage_params, agent, obs_rms,
+                    num_episodes_per_path=max(2, config.training.num_eval_episodes // len(path_types))
+                )
+                # Print per-path breakdown
+                print(f"  Per-path metrics:")
+                for pt, pm in eval_metrics.get('per_path', {}).items():
+                    print(f"    {pt}: pos={pm['pos_error_mean']*1000:.2f}mm, ori={np.degrees(pm['ori_error_mean']):.2f}°")
+            else:
+                # Single-path evaluation (original behavior)
+                eval_metrics = evaluate(env, agent, obs_rms, config.training.num_eval_episodes)
 
             print(f"  Mean episode reward: {eval_metrics['mean_episode_reward']:.2f} ± {eval_metrics['std_episode_reward']:.2f}")
             print(f"  Mean episode length: {eval_metrics['mean_episode_length']:.1f}")
@@ -698,7 +779,8 @@ def train(config):
 
                 # Recreate environment with new stage parameters
                 env.close()
-                env = make_env_with_stage(config, stage_params, bidirectional=bidirectional)
+                env, current_path_type = make_env_with_stage(config, stage_params, bidirectional=bidirectional)
+                print(f"  Path types in pool: {stage_params.get('path_types', ['circle'])}")
 
                 # Unfreeze normalizers to allow gradual adaptation (don't reset - too disruptive)
                 obs_rms.unfreeze()
