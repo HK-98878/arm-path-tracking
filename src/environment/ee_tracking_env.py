@@ -13,7 +13,7 @@ from .observation import ObservationBuilder
 from ..paths.base_path import Path
 from ..control.dls_jacobian import DLSController, compute_jacobian_mujoco
 from ..rewards.tracking_reward import TrackingReward
-from ..utils.kinematics import quat_to_matrix
+from ..utils.kinematics import quat_to_matrix, rotation_error_rotvec
 
 
 class EETrackingEnv(gym.Env):
@@ -43,8 +43,8 @@ class EETrackingEnv(gym.Env):
         dls_config: Optional[dict] = None,
         include_orientation: bool = False,
         lookahead_ds: float = 0.02,
-        randomize_start_phase: bool = False,
-        phase_offset_max: float = 0.1
+        randomize_start_position: bool = False,
+        start_position_noise: float = 0.06,
     ):
         """Initialize environment.
 
@@ -60,6 +60,8 @@ class EETrackingEnv(gym.Env):
             dls_config: Optional DLS controller config
             include_orientation: Whether to include orientation control
             lookahead_ds: Distance between lookahead points in observation (meters)
+            randomize_start_position: Sample a random arc-length phase and solve IK each reset
+            start_position_noise: Sphere radius (m) for positional offset around the path point
         """
         super().__init__()
 
@@ -112,8 +114,8 @@ class EETrackingEnv(gym.Env):
             lookahead_ds=lookahead_ds
         )
 
-        self.randomize_start_phase = randomize_start_phase
-        self.phase_offset_max = phase_offset_max
+        self.randomize_start_position = randomize_start_position
+        self.start_position_noise = start_position_noise
 
         # Reward computer
         self.reward_computer = TrackingReward(**reward_config)
@@ -143,6 +145,41 @@ class EETrackingEnv(gym.Env):
         self.step_count = 0
         self.prev_action = np.zeros(6, dtype=np.float32)
 
+    _Q_NOMINAL = np.array([0.0, -0.3, 0.0, -2.2, 0.0, 2.0, 0.785])
+
+    def _solve_ik(
+        self,
+        target_pos: np.ndarray,
+        target_quat_xyzw: np.ndarray,
+        n_iters: int = 100,
+        pos_tol: float = 0.002,
+    ) -> Optional[np.ndarray]:
+        """Iterative 6-DOF IK via DLS, seeded from nominal q. Returns q or None."""
+        q = self._Q_NOMINAL.copy()
+        for _ in range(n_iters):
+            self.data.qpos[:self.n_joints] = q
+            self.data.qvel[:self.n_joints] = 0.0
+            mujoco.mj_forward(self.model, self.data)
+            pos_err = target_pos - self.data.xpos[self.ee_body_id]
+            if np.linalg.norm(pos_err) < pos_tol:
+                return q
+            ee_quat_mj = self.data.xquat[self.ee_body_id]
+            ee_quat = np.array([ee_quat_mj[1], ee_quat_mj[2], ee_quat_mj[3], ee_quat_mj[0]])
+            ori_err = rotation_error_rotvec(ee_quat, target_quat_xyzw)
+            J = compute_jacobian_mujoco(self.model, self.data, self.ee_body_id)
+            dq = self.dls_controller.compute_dq(
+                dx_ee_world=np.concatenate([pos_err, ori_err]),
+                q_current=q,
+                jacobian=J,
+                use_null_space=True,
+            )
+            q = np.clip(q + dq, self.q_min, self.q_max)
+        self.data.qpos[:self.n_joints] = q
+        mujoco.mj_forward(self.model, self.data)
+        if np.linalg.norm(target_pos - self.data.xpos[self.ee_body_id]) < pos_tol * 5:
+            return q
+        return None
+
     def reset(
         self,
         seed: Optional[int] = None,
@@ -166,38 +203,31 @@ class EETrackingEnv(gym.Env):
         # Reset MuJoCo simulation
         mujoco.mj_resetData(self.model, self.data)
 
-        # Set initial joint configuration
-        # Use a config that puts EE closer to the circle
-        # This is a manually tuned configuration for circle at [0.5, 0, 0.3] radius 0.3
-        q_init = np.array([0.0, -0.3, 0.0, -2.2, 0.0, 2.0, 0.785])
+        # Compute initial joint configuration
+        if self.randomize_start_position:
+            s_phase = self.np_random.uniform(0.0, self.path.total_length)
+            p_on_path = self.path.position(s_phase)
+            noise_dir = self.np_random.standard_normal(3)
+            noise_dir /= np.linalg.norm(noise_dir)
+            noise_mag = self.np_random.uniform(0.0, self.start_position_noise)
+            target_pos = p_on_path + noise_dir * noise_mag
+            target_quat = self.path.orientation(s_phase)
+            result = self._solve_ik(target_pos, target_quat)
+            q_init = result if result is not None else self._Q_NOMINAL
+        else:
+            q_init = self._Q_NOMINAL
+
         self.data.qpos[:self.n_joints] = q_init
         self.data.qvel[:self.n_joints] = 0.0
-
-        # Forward kinematics
         mujoco.mj_forward(self.model, self.data)
 
         # Find closest point on path to start tracking
         ee_pos = self.data.xpos[self.ee_body_id]
 
-        # Search for closest arc length
         s_samples = np.linspace(0, self.path.total_length, 100)
-        errors = []
-        for s in s_samples:
-            pos = self.path.position(s)
-            error = np.linalg.norm(ee_pos - pos)
-            errors.append(error)
-
+        errors = [np.linalg.norm(ee_pos - self.path.position(s)) for s in s_samples]
         closest_idx = np.argmin(errors)
         self.s_current = s_samples[closest_idx]
-
-        # Shift the arc-length clock forward in the direction of travel so the
-        # policy trains from varied phases, not always the same starting offset.
-        # Forward-only: backward offsets would snap s_current via the min/max cap.
-        if self.randomize_start_phase and self.phase_offset_max > 0:
-            speed_sign = np.sign(self.path.speed) if self.path.speed != 0 else 1.0
-            max_arc = self.phase_offset_max * self.path.total_length
-            arc_offset = self.np_random.uniform(0.0, max_arc)
-            self.s_current = self.s_current + speed_sign * arc_offset
 
         # Print initial EE position for debugging (first reset only)
         if not hasattr(self, '_printed_init_pos'):

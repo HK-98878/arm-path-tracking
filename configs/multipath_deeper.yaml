@@ -1,12 +1,10 @@
-# Run 52: Staged phase offset (fix for run 51 orientation cascade)
-# Run 51: FAILED - global phase_offset_max 0.1 applied from stage 0
-#   - 90mm initial errors from ep 0 → arm makes large corrections → orientation diverges to ~80°
-#   - Once orientation stuck, arm enters bad pose → position cascades (fig-8 catastrophic)
-# Run 50: FAILED - max_episode_steps 3000, position diverged to 183mm (YZ-oval local optimum)
-# Run 49: [256,256,256], 1000 steps - circle 25mm (spiral), figure-8 4mm (excellent)
-# Changes vs run 51:
-#   - phase_offset_max now PER-STAGE: 0.0 / 0.0 / 0.05 / 0.10
-#   - Orientation learns normally in stages 0-1 (like run 49), offset only after it's stable
+# Run 53: Physical start position randomisation via IK
+# Run 52: FAILED - staged phase_offset_max (0/0/0.05/0.10) didn't fix spiral; arm still started
+#   at same physical location, policy only learned to converge from fixed phase s≈0.68
+# Fix: sample random arc-length phase + 60mm sphere noise, solve 6-DOF IK each reset
+#   - EE physically starts at different circle phases every episode
+#   - IK seeded from nominal q_init → maintains target orientation, bounded initial error
+#   - phase_offset_max / randomize_start_phase removed entirely (superseded by IK approach)
 
 # Environment
 env:
@@ -15,8 +13,8 @@ env:
   max_episode_steps: 1000
   ee_body_name: "attachment"
   lookahead_ds: 0.04  # 20cm horizon (was 0.02/10cm) - anticipate figure-8 inflection earlier
-  randomize_start_phase: true
-  phase_offset_max: 0.1  # 0-10% arc forward offset per episode; max chord ~92mm for circle
+  randomize_start_position: true
+  start_position_noise: 0.06  # 60mm sphere radius around random path point
 
 # Path
 path:
@@ -112,7 +110,7 @@ seed: 42
 #   3. All stages have explicit w_ori (no fallback to global)
 #   4. Fixed orientation only
 #   5. Path diversity: figure-8 added at stage 2 (70/30), 50/50 at stage 3
-#   6. phase_offset_max staged: 0 early (orientation learns first), grows once orientation is stable
+#   6. randomize_start_position: IK-based phase randomisation replaces arc-clock offset
 curriculum:
   enabled: true
   stages:
@@ -126,7 +124,6 @@ curriculum:
       path_weights: [1.0]
       advance_threshold: 0.08
       max_steps: 500000
-      phase_offset_max: 0.0
 
     # Stage 1:
     - speed: 0.10
@@ -138,7 +135,6 @@ curriculum:
       path_weights: [1.0]
       advance_threshold: 0.06
       max_steps: 500000
-      phase_offset_max: 0.0
 
     # Stage 2:
     - speed: 0.15
@@ -150,7 +146,6 @@ curriculum:
       path_weights: [0.7, 0.3]
       advance_threshold: 0.04
       max_steps: 500000
-      phase_offset_max: 0.05  # ~47mm max chord - moderate orbit phase diversity
 
     # Stage 3:
     - speed: 0.20
@@ -162,7 +157,6 @@ curriculum:
       path_weights: [0.5, 0.5]
       advance_threshold: null
       max_steps: 1000000
-      phase_offset_max: 0.10  # ~93mm max chord - full orbit phase diversity
 
   consecutive_evals: 5
   warmup_after_transition: 10000
