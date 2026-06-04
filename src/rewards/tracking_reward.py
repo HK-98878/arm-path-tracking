@@ -31,7 +31,9 @@ class TrackingReward:
         pos_linear_fallback_max: float = 0.5,
         ori_linear_fallback_max: float = 3.14,
         vel_gate_max: float = 0.3,
-        vel_reward_type: str = "tangent"
+        vel_reward_type: str = "tangent",
+        w_vel_match: float = 0.0,
+        vel_match_gate_max: float = 0.05,
     ):
         """Initialize reward computer.
 
@@ -76,6 +78,8 @@ class TrackingReward:
         self.ori_linear_fallback_max = ori_linear_fallback_max
         self.vel_gate_max = vel_gate_max
         self.vel_reward_type = vel_reward_type
+        self.w_vel_match = w_vel_match
+        self.vel_match_gate_max = vel_match_gate_max
 
     def compute(
         self,
@@ -85,7 +89,8 @@ class TrackingReward:
         joint_vel: np.ndarray,
         ori_error: Optional[float] = None,
         tangent_progress: Optional[float] = None,
-        arc_progress: Optional[float] = None
+        arc_progress: Optional[float] = None,
+        vel_error_sq: Optional[float] = None,
     ) -> dict:
         """Compute reward and its components.
 
@@ -155,6 +160,13 @@ class TrackingReward:
                 # progress=-1 (backwards at path speed) -> tanh(-1) ≈ -0.76
                 r_vel = self.w_vel * vel_gate * np.tanh(tangent_progress)
 
+        # Velocity-matching penalty: penalise squared error vs path reference velocity,
+        # gated so it's active near the path but suppressed during corrections
+        r_vel_match = 0.0
+        if self.w_vel_match > 0 and vel_error_sq is not None:
+            vm_gate = float(np.clip(1.0 - pos_error / self.vel_match_gate_max, 0.0, 1.0))
+            r_vel_match = -self.w_vel_match * vm_gate * vel_error_sq
+
         # Action rate penalty (jerk in action space)
         # Adaptive: scale by pos_quality so corrections aren't penalized when off-path
         action_change = action - prev_action
@@ -167,13 +179,14 @@ class TrackingReward:
         p_joint_vel = effective_w_joint_vel * np.sum(joint_vel ** 2)
 
         # Total reward
-        reward = r_pos + r_ori + r_vel - p_action_rate - p_joint_vel
+        reward = r_pos + r_ori + r_vel + r_vel_match - p_action_rate - p_joint_vel
 
         return {
             'reward': float(reward),
             'r_pos': float(r_pos),
             'r_ori': float(r_ori),
             'r_vel': float(r_vel),
+            'r_vel_match': float(r_vel_match),
             'p_action_rate': float(p_action_rate),
             'p_joint_vel': float(p_joint_vel),
             'pos_error': float(pos_error),
@@ -232,6 +245,10 @@ class TrackingReward:
             else:
                 tangent_progress = 0.0
 
+        vel_error_sq = None
+        if self.w_vel_match > 0 and target_vel is not None:
+            vel_error_sq = float(np.sum((ee_vel - target_vel) ** 2))
+
         return self.compute(
             pos_error=pos_error,
             action=action,
@@ -239,7 +256,8 @@ class TrackingReward:
             joint_vel=joint_vel,
             ori_error=ori_error,
             tangent_progress=tangent_progress,
-            arc_progress=arc_progress
+            arc_progress=arc_progress,
+            vel_error_sq=vel_error_sq,
         )
 
     def max_reward(self) -> float:
