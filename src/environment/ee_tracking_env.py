@@ -219,6 +219,7 @@ class EETrackingEnv(gym.Env):
 
         self.data.qpos[:self.n_joints] = q_init
         self.data.qvel[:self.n_joints] = 0.0
+        self.data.ctrl[:self.n_joints] = q_init
         mujoco.mj_forward(self.model, self.data)
 
         # Find closest point on path to start tracking
