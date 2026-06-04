@@ -41,7 +41,8 @@ class EETrackingEnv(gym.Env):
         ee_body_name: str = "attachment_site",
         render_mode: Optional[str] = None,
         dls_config: Optional[dict] = None,
-        include_orientation: bool = False
+        include_orientation: bool = False,
+        lookahead_ds: float = 0.02
     ):
         """Initialize environment.
 
@@ -55,6 +56,8 @@ class EETrackingEnv(gym.Env):
             ee_body_name: Name of end-effector body in MuJoCo model
             render_mode: Rendering mode (None for headless)
             dls_config: Optional DLS controller config
+            include_orientation: Whether to include orientation control
+            lookahead_ds: Distance between lookahead points in observation (meters)
         """
         super().__init__()
 
@@ -103,7 +106,8 @@ class EETrackingEnv(gym.Env):
         # Observation builder
         self.obs_builder = ObservationBuilder(
             n_joints=self.n_joints,
-            joint_limits=(self.q_min, self.q_max)
+            joint_limits=(self.q_min, self.q_max),
+            lookahead_ds=lookahead_ds
         )
 
         # Reward computer

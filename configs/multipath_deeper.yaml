@@ -1,0 +1,159 @@
+# Run 49: Multi-path (circle + figure-8) with deeper network [256,256,256]
+# Run 48: [256,256] plateaued at ~26mm on both paths (capacity ceiling)
+# Changes vs run 48:
+#   - hidden_sizes [256,256] -> [256,256,256] (more capacity for curvature diversity)
+#   - lookahead_ds 0.02 -> 0.04m (20cm horizon vs 10cm, anticipate figure-8 inflection earlier)
+
+# Environment
+env:
+  model_path: "src/models/mujoco_menagerie/franka_emika_panda/panda_nohand.xml"
+  dt: 0.01  # 100 Hz control
+  max_episode_steps: 1000
+  ee_body_name: "attachment"
+  lookahead_ds: 0.04  # 20cm horizon (was 0.02/10cm) - anticipate figure-8 inflection earlier
+
+# Path
+path:
+  type: circle
+  radius: 0.15
+  center: [0.32, 0.0, 0.52]
+  speed: 0.1
+  # Fixed orientation only - add variation after baseline is smooth
+  orientation_modes: ['fixed']
+  rock_amplitude: 0.175
+  n_oscillations: 2
+
+# Control
+control:
+  # REDUCED: 0.02 -> 0.01 (2x reduction, not 4x)
+  # 10mm linear: middle ground between oscillation (20mm) and too weak (5mm)
+  # 30mrad angular: slightly reduced from 50mrad
+  action_scale: [0.01, 0.01, 0.01, 0.03, 0.03, 0.03]
+  dls:
+    k_limit: 0.5
+    lambda_min: 0.0001
+    lambda_max: 0.1
+    manip_threshold: 0.05
+    # Separate damping for linear vs angular DOFs
+    # Run 46 (threshold_angular=1.0): Good in low-manip, bad in high-manip (54° overall)
+    # Run 47: Try partial angular damping - threshold=3.0 provides some regularization
+    # in high-manip (ang_manip=2.88) while keeping minimal damping in low-manip (ang_manip=3.37)
+    separate_lin_ang_damping: true
+    manip_threshold_linear: 0.025  # Linear manip range: 0.027-0.12
+    manip_threshold_angular: 3.0   # Partial damping: high-manip gets some, low-manip gets minimal
+
+# Reward
+reward:
+  w_pos: 1.0
+  w_ori: 1.0  # Global fallback - but curriculum stages override this
+  w_vel: 0.5
+  w_action_rate: 0.1
+  w_joint_vel: 0.001
+  sig_pos: 0.15
+  sig_ori: 0.50  # Loose default - curriculum stages override
+  sig_vel: 0.15
+  pos_linear_fallback_max: 0.5
+  ori_linear_fallback_max: 3.14
+  vel_gate_max: 0.15
+  vel_reward_type: arc_length
+
+# PPO
+ppo:
+  learning_rate: 0.00003
+  lr_min: 0.000005
+  lr_decay: linear
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  n_steps: 2048
+  n_epochs: 4
+  batch_size: 64
+  ent_coef: 0.01
+  ent_coef_min: 0.001
+  ent_decay: linear
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  hidden_sizes: [256, 256, 256]
+
+# CAPS
+caps:
+  enabled: true
+  lambda_temporal: 0.5
+  lambda_spatial: 0.1
+  spatial_noise_std: 0.01
+
+# Training
+training:
+  total_timesteps: 1000000
+  eval_frequency: 10000
+  save_frequency: 50000
+  log_frequency: 1000
+  num_eval_episodes: 5
+  normalization_warmup: 10000
+  bidirectional: true
+
+# Logging
+logging:
+  output_dir: "outputs/multipath_deeper"
+  tensorboard: true
+  save_video: false
+
+seed: 42
+
+# Curriculum - KEY CHANGES:
+#   1. w_ori gradual: 0.3 -> 0.5 -> 0.7 -> 1.0 (not 2.0)
+#   2. sig_ori gradual: 0.20 -> 0.15 -> 0.12 -> 0.10 (not 0.05)
+#   3. All stages have explicit w_ori (no fallback to global)
+#   4. Fixed orientation only
+#   5. Path diversity: figure-8 added at stage 2 (70/30), 50/50 at stage 3
+curriculum:
+  enabled: true
+  stages:
+    # Stage 0: Loose sig_ori for gradient at large errors (circle only)
+    - speed: 0.05
+      sig_pos: 0.15
+      sig_ori: 0.50
+      w_ori: 0.3
+      orientation_modes: ['fixed']
+      path_types: ['circle']
+      path_weights: [1.0]
+      advance_threshold: 0.08
+      max_steps: 500000
+
+    # Stage 1: Start tightening sig_ori (circle only)
+    - speed: 0.10
+      sig_pos: 0.10
+      sig_ori: 0.25  # Tighter than run 43's 0.30
+      w_ori: 0.5
+      orientation_modes: ['fixed']
+      path_types: ['circle']
+      path_weights: [1.0]
+      advance_threshold: 0.06
+      max_steps: 500000
+
+    # Stage 2: Add figure-8 (70/30 circle-heavy)
+    - speed: 0.15
+      sig_pos: 0.05
+      sig_ori: 0.15  # Tighter than run 43's 0.20
+      w_ori: 0.7     # Back to run 43 value (not 0.9)
+      orientation_modes: ['fixed']
+      path_types: ['circle', 'figure8']
+      path_weights: [0.7, 0.3]
+      advance_threshold: 0.04
+      max_steps: 500000
+
+    # Stage 3: 50/50 path mix
+    - speed: 0.20
+      sig_pos: 0.02
+      sig_ori: 0.10  # Tight: sharper gradient at small ori errors
+      w_ori: 1.0     # Back to run 43 value (not 1.3)
+      orientation_modes: ['fixed']
+      path_types: ['circle', 'figure8']
+      path_weights: [0.5, 0.5]
+      advance_threshold: null
+      max_steps: 1000000
+
+  consecutive_evals: 5
+  warmup_after_transition: 10000
+  lr_warmup_multiplier: 2.0
+  ent_warmup_multiplier: 2.0

@@ -246,7 +246,8 @@ def make_env(config, bidirectional=False, include_orientation=False, path_type='
         ee_body_name=config.env.ee_body_name,
         render_mode=None,  # Headless
         dls_config=config.control.dls.to_dict() if hasattr(config.control, 'dls') else None,
-        include_orientation=include_orientation
+        include_orientation=include_orientation,
+        lookahead_ds=getattr(config.env, 'lookahead_ds', 0.02)
     )
 
     return env
@@ -322,7 +323,8 @@ def make_env_with_stage(config, stage_params, bidirectional=False, path_type_ove
         ee_body_name=config.env.ee_body_name,
         render_mode=None,  # Headless
         dls_config=config.control.dls.to_dict() if hasattr(config.control, 'dls') else None,
-        include_orientation=include_orientation
+        include_orientation=include_orientation,
+        lookahead_ds=getattr(config.env, 'lookahead_ds', 0.02)
     )
 
     return env, path_type
@@ -819,10 +821,14 @@ def train(config):
 
 
 if __name__ == "__main__":
-    # Load configuration
-    config_path = project_root / "configs" / "circle_baseline.yaml"
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', type=str,
+                        default=str(project_root / "configs" / "circle_baseline.yaml"))
+    args = parser.parse_args()
+
+    config_path = Path(args.config)
     print(f"Loading configuration from: {config_path}")
     config = load_config(config_path)
 
-    # Train
     train(config)

@@ -4,6 +4,21 @@
 import argparse
 import os
 import sys
+
+# Must set MUJOCO_GL before any MuJoCo imports
+# Parse --mode early to determine GL backend
+def _get_mode_from_args():
+    for i, arg in enumerate(sys.argv):
+        if arg == '--mode' and i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+    return 'video'  # default
+
+_mode = _get_mode_from_args()
+if _mode == 'viewer':
+    os.environ['MUJOCO_GL'] = 'glfw'
+else:
+    os.environ.setdefault('MUJOCO_GL', 'egl')
+
 from pathlib import Path
 import numpy as np
 import torch
@@ -13,7 +28,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.environment.ee_tracking_env import EETrackingEnv
-from src.paths.circle_path import CirclePath
+from src.paths import create_path
 from src.rl.ppo import PPO
 from src.utils.config import load_config
 from src.utils.normalization import RunningMeanStd
@@ -53,6 +68,9 @@ def parse_args():
                        help='Use zero actions (pure feedforward, no policy)')
     parser.add_argument('--reverse-path', action='store_true',
                        help='Reverse path direction (negative speed)')
+    parser.add_argument('--path-type', type=str, default='circle',
+                       choices=['circle', 'figure8'],
+                       help='Path type to visualize')
     parser.add_argument('--render-width', type=int, default=640,
                        help='Render width')
     parser.add_argument('--render-height', type=int, default=480,
@@ -62,27 +80,33 @@ def parse_args():
 
 
 def setup_mujoco_gl(mode):
-    """Set MUJOCO_GL environment variable based on mode."""
-    if mode == 'viewer':
-        os.environ['MUJOCO_GL'] = 'glfw'
-        print("Using MUJOCO_GL=glfw (interactive viewer)")
-    else:
-        os.environ['MUJOCO_GL'] = 'egl'
-        print("Using MUJOCO_GL=egl (headless rendering)")
+    """Print MUJOCO_GL info (already set before imports)."""
+    gl_backend = os.environ.get('MUJOCO_GL', 'unknown')
+    print(f"Using MUJOCO_GL={gl_backend}")
 
 
-def make_env(config, render_mode='rgb_array', reverse_path=False):
-    """Create environment from config (same as train_circle.py)."""
+def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='circle'):
+    """Create environment from config."""
     speed = config.path.speed
     if reverse_path:
         speed = -speed
         print(f"  Reversed path direction: speed = {speed}")
 
-    path = CirclePath(
-        radius=config.path.radius,
+    # Get orientation variation parameters
+    orientation_modes = getattr(config.path, 'orientation_modes', ['fixed'])
+    rock_amplitude = getattr(config.path, 'rock_amplitude', 0.175)
+    n_oscillations = getattr(config.path, 'n_oscillations', 2)
+
+    path = create_path(
+        path_type=path_type,
         center=np.array(config.path.center),
-        speed=speed
+        radius=config.path.radius,
+        speed=speed,
+        orientation_modes=orientation_modes,
+        rock_amplitude=rock_amplitude,
+        n_oscillations=n_oscillations,
     )
+    print(f"  Path: {path}")
 
     # Enable orientation if w_ori > 0
     include_orientation = getattr(config.reward, 'w_ori', 0) > 0
@@ -97,7 +121,8 @@ def make_env(config, render_mode='rgb_array', reverse_path=False):
         ee_body_name=config.env.ee_body_name,
         render_mode=render_mode,
         dls_config=config.control.dls.to_dict() if hasattr(config.control, 'dls') else None,
-        include_orientation=include_orientation
+        include_orientation=include_orientation,
+        lookahead_ds=getattr(config.env, 'lookahead_ds', 0.02)
     )
 
     return env
@@ -270,7 +295,7 @@ def main():
     # Create environment
     print("Creating environment...")
     render_mode = 'rgb_array' if args.mode in ['video', 'headless'] else None
-    env = make_env(config, render_mode=render_mode, reverse_path=args.reverse_path)
+    env = make_env(config, render_mode=render_mode, reverse_path=args.reverse_path, path_type=args.path_type)
     print(f"  Observation space: {env.observation_space.shape}")
     print(f"  Action space: {env.action_space.shape}")
 
