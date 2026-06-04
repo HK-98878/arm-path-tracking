@@ -328,7 +328,10 @@ def make_env_with_stage(config, stage_params, bidirectional=False, path_type_ove
         include_orientation=include_orientation,
         lookahead_ds=getattr(config.env, 'lookahead_ds', 0.02),
         randomize_start_phase=getattr(config.env, 'randomize_start_phase', False),
-        phase_offset_max=getattr(config.env, 'phase_offset_max', 0.1),
+        phase_offset_max=stage_params.get(
+            'phase_offset_max',
+            getattr(config.env, 'phase_offset_max', 0.0)
+        ),
     )
 
     return env, path_type
