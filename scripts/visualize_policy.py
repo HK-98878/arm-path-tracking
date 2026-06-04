@@ -68,6 +68,8 @@ def parse_args():
                        help='Use zero actions (pure feedforward, no policy)')
     parser.add_argument('--reverse-path', action='store_true',
                        help='Reverse path direction (negative speed)')
+    parser.add_argument('--fixed-start', action='store_true',
+                        help='Force fixed nominal start position regardless of config')
     parser.add_argument('--path-type', type=str, default='circle',
                        choices=['circle', 'figure8'],
                        help='Path type to visualize')
@@ -85,7 +87,7 @@ def setup_mujoco_gl(mode):
     print(f"Using MUJOCO_GL={gl_backend}")
 
 
-def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='circle'):
+def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='circle', fixed_start=False):
     """Create environment from config."""
     speed = config.path.speed
     if reverse_path:
@@ -122,7 +124,9 @@ def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='cir
         render_mode=render_mode,
         dls_config=config.control.dls.to_dict() if hasattr(config.control, 'dls') else None,
         include_orientation=include_orientation,
-        lookahead_ds=getattr(config.env, 'lookahead_ds', 0.02)
+        lookahead_ds=getattr(config.env, 'lookahead_ds', 0.02),
+        randomize_start_position=False if fixed_start else getattr(config.env, 'randomize_start_position', False),
+        start_position_noise=getattr(config.env, 'start_position_noise', 0.06),
     )
 
     return env
@@ -295,7 +299,7 @@ def main():
     # Create environment
     print("Creating environment...")
     render_mode = 'rgb_array' if args.mode in ['video', 'headless'] else None
-    env = make_env(config, render_mode=render_mode, reverse_path=args.reverse_path, path_type=args.path_type)
+    env = make_env(config, render_mode=render_mode, reverse_path=args.reverse_path, path_type=args.path_type, fixed_start=args.fixed_start)
     print(f"  Observation space: {env.observation_space.shape}")
     print(f"  Action space: {env.action_space.shape}")
 

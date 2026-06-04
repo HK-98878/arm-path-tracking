@@ -222,6 +222,15 @@ class EETrackingEnv(gym.Env):
         self.data.ctrl[:self.n_joints] = q_init
         mujoco.mj_forward(self.model, self.data)
 
+        # Settle: run physics at this pose (ctrl=q_init, no policy) so gravity/PD
+        # reach equilibrium before the episode starts. Then wipe velocity for a
+        # clean kinematic start. Without this, the first policy step sees inertial
+        # ringing from the arm being placed suddenly in a new configuration.
+        for _ in range(10):
+            mujoco.mj_step(self.model, self.data)
+        self.data.qvel[:self.n_joints] = 0.0
+        mujoco.mj_forward(self.model, self.data)
+
         # Find closest point on path to start tracking
         ee_pos = self.data.xpos[self.ee_body_id]
 
