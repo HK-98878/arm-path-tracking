@@ -168,9 +168,10 @@ class TrackingReward:
             r_vel_match = -self.w_vel_match * vm_gate * vel_error_sq
 
         # Action rate penalty (jerk in action space)
-        # Adaptive: scale by pos_quality so corrections aren't penalized when off-path
+        # Inverted gate: strongest far from path (suppresses oscillation during recovery),
+        # weakest near path (where vel_match handles smoothing and corners need authority)
         action_change = action - prev_action
-        effective_w_action_rate = self.w_action_rate * pos_quality
+        effective_w_action_rate = self.w_action_rate * (1.0 - pos_quality)
         p_action_rate = effective_w_action_rate * np.sum(action_change ** 2)
 
         # Joint velocity penalty (catches null-space jitter)
