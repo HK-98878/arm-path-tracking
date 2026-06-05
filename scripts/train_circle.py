@@ -42,7 +42,7 @@ class CurriculumManager:
         self.warmup_steps = config.curriculum.warmup_after_transition
         self.current_stage = 0
         self.steps_in_stage = 0
-        self.eval_history = []  # List of pos_error_mean values
+        self.eval_history = []  # List of dicts: {path_type: pos_error_mean}
 
     def get_current_params(self):
         """Get all parameters for current stage.
@@ -55,10 +55,10 @@ class CurriculumManager:
             return {}
         return dict(self.stages[self.current_stage])
 
-    def record_eval(self, pos_error_mean):
-        """Record evaluation result."""
+    def record_eval(self, per_path_errors: dict):
+        """Record evaluation result. per_path_errors: {path_type: mean_pos_error}"""
         if self.enabled:
-            self.eval_history.append(pos_error_mean)
+            self.eval_history.append(per_path_errors)
 
     def should_advance(self):
         """Check if should advance to next stage."""
@@ -69,10 +69,14 @@ class CurriculumManager:
         threshold = stage.get('advance_threshold')
         max_steps = stage.get('max_steps')  # None means no step-count fallback
 
-        # Threshold met for consecutive evals
+        # All active path types must independently meet the threshold for
+        # consecutive_evals in a row.
         if threshold and len(self.eval_history) >= self.consecutive_evals:
             recent = self.eval_history[-self.consecutive_evals:]
-            if all(e < threshold for e in recent):
+            if all(
+                all(err < threshold for err in eval_entry.values())
+                for eval_entry in recent
+            ):
                 return True
 
         # Fallback: max steps in stage (skipped when max_steps is null/None)
@@ -371,7 +375,7 @@ def make_env_with_stage(config, stage_params, bidirectional=False, path_type_ove
     return env, path_type
 
 
-def evaluate(env, agent, obs_rms, num_episodes=5):
+def evaluate(env, agent, obs_rms, num_episodes=5, eval_seed=None):
     """Evaluate agent performance.
 
     Args:
@@ -398,8 +402,8 @@ def evaluate(env, agent, obs_rms, num_episodes=5):
     all_pos_errors = []
     all_ori_errors = []
 
-    for _ in range(num_episodes):
-        obs, _ = env.reset()
+    for i in range(num_episodes):
+        obs, _ = env.reset(seed=eval_seed if i == 0 else None)
         obs = obs_rms.normalize(obs)  # Normalize observation
         done = False
         episode_reward = 0
@@ -526,8 +530,12 @@ def evaluate_multi_path(config, stage_params, agent, obs_rms, num_episodes_per_p
         # B-splines are random per episode: run more to get a reliable average
         n_eps = max(5, num_episodes_per_path) if path_type == 'bspline' else num_episodes_per_path
 
+        # Fixed seed for bspline eval so the same path sequence is used every eval,
+        # making the trend signal interpretable (training paths remain random).
+        bspline_eval_seed = config.seed if path_type == 'bspline' else None
+
         # Run evaluation
-        metrics = evaluate(env, agent, obs_rms, n_eps)
+        metrics = evaluate(env, agent, obs_rms, n_eps, eval_seed=bspline_eval_seed)
         per_path_metrics[path_type] = metrics
         env.close()
 
@@ -792,7 +800,9 @@ def train(config):
 
             # Spike detection and curriculum management
             pos_error_mean = eval_metrics['pos_error_mean']
-            curriculum.record_eval(pos_error_mean)
+            per_path_errors = {pt: m['pos_error_mean'] for pt, m in eval_metrics.get('per_path', {}).items()} \
+                or {'circle': pos_error_mean}
+            curriculum.record_eval(per_path_errors)
 
             # Spike detection (suppressed after curriculum transitions)
             if spike_suppression_evals > 0:
