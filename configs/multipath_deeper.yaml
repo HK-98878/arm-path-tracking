@@ -12,7 +12,7 @@ env:
   dt: 0.01  # 100 Hz control
   max_episode_steps: 1000
   ee_body_name: "attachment"
-  lookahead_ds: 0.04  # 20cm horizon (was 0.02/10cm) - anticipate figure-8 inflection earlier
+  lookahead_ds: 0.02
   randomize_start_position: true
   start_position_noise: 0.06  # 60mm sphere radius around random path point
 

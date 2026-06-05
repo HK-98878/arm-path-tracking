@@ -246,9 +246,7 @@ class TrackingReward:
 
         vel_error_sq = None
         if self.w_vel_match > 0 and target_vel is not None:
-            ee_speed = np.linalg.norm(ee_vel)
-            ref_speed = np.linalg.norm(target_vel)
-            vel_error_sq = float((ee_speed - ref_speed) ** 2)
+            vel_error_sq = float(np.sum((ee_vel - target_vel) ** 2))
 
         return self.compute(
             pos_error=pos_error,
