@@ -1,7 +1,7 @@
 # B-spline generalisation curriculum with jerk minimisation and noise robustness.
 #
 # Key changes from multipath_deeper.yaml (Run 58 baseline):
-#   - obs_dim: 58 -> 61 (EE linear acceleration added)
+#   - obs_dim: 58 (EE accel not included; spikes at reset pollute normalization)
 #   - w_vel_match removed (was causing near-path oscillation vs action_rate)
 #   - w_ee_jerk added: physical EE jerk penalty in workspace (m/s^2)^2
 #   - w_action_rate reduced: now secondary to EE jerk + CAPS
@@ -18,7 +18,7 @@ env:
   lookahead_ds: 0.04
   randomize_start_position: true
   start_position_noise: 0.06
-  include_ee_accel: true  # obs_dim: 58 -> 61
+  include_ee_accel: false  # 58 dims; accel spikes at reset pollute normalization
 
 # Path (base config; curriculum stages override speed and path_types)
 path:
@@ -57,8 +57,8 @@ reward:
   w_vel: 0.5
   w_action_rate: 0.05  # reduced from 0.1; now secondary to EE jerk
   w_joint_vel: 0.001
-  w_ee_jerk: 0.2       # EE acceleration penalty (m/s^2)^2, gated by pos_quality
-  ee_jerk_scale: 10.0  # normalisation: penalty = w_ee_jerk * accel_sq / scale
+  w_ee_jerk: 0.1       # EE acceleration penalty (m/s^2)^2, gated by pos_quality
+  ee_jerk_scale: 1000.0  # calibrated so random-policy penalty ~5% of r_pos; accel_sq ~500 random vs ~0.005 trained
   w_vel_match: 0.0     # removed: was causing near-path oscillation
   sig_pos: 0.15        # overridden per stage
   sig_ori: 0.50        # overridden per stage
