@@ -1,23 +1,24 @@
 """Observation builder for end-effector tracking environment.
 
-Constructs the 58-dimensional observation vector (for n=7 joints):
+Constructs the observation vector (for n=7 joints):
 - Position error (EE frame): 3
 - Orientation error (rotation vector, EE frame): 3
 - Lookahead points (EE frame): 15 (5 points × 3)
 - Reference velocity (EE frame): 3
 - EE linear velocity (EE frame): 3
 - EE angular velocity (EE frame): 3
+- EE linear acceleration (EE frame): 3  [only if include_ee_accel=True]
 - Joint positions: 7
 - Joint velocities: 7
 - Previous action: 6
 - Manipulability: 1
 - Joint limit proximity: 7
 
-Total: 58 dimensions
+Total: 58 dimensions (without EE accel) or 61 (with EE accel)
 """
 
 import numpy as np
-from typing import Tuple
+from typing import Dict, Optional, Tuple
 from .robot_state import RobotState
 from ..paths.base_path import Path
 from ..utils.kinematics import rotation_error_rotvec
@@ -32,7 +33,10 @@ class ObservationBuilder:
         n_joints: int,
         joint_limits: Tuple[np.ndarray, np.ndarray],
         lookahead_n: int = 5,
-        lookahead_ds: float = 0.02
+        lookahead_ds: float = 0.02,
+        include_ee_accel: bool = False,
+        obs_noise_config: Optional[Dict] = None,
+        dt: float = 0.01,
     ):
         """Initialize observation builder.
 
@@ -41,11 +45,18 @@ class ObservationBuilder:
             joint_limits: Tuple of (q_min, q_max) arrays
             lookahead_n: Number of lookahead points
             lookahead_ds: Distance between lookahead points (meters)
+            include_ee_accel: If True, add 3-dim EE linear acceleration slot
+            obs_noise_config: Optional dict with noise std keys:
+                obs_noise_pos_std, obs_noise_vel_std, lookahead_noise_std
+            dt: Control timestep (seconds), used to compute EE acceleration
         """
         self.n_joints = n_joints
         self.q_min, self.q_max = joint_limits
         self.lookahead_n = lookahead_n
         self.lookahead_ds = lookahead_ds
+        self.include_ee_accel = include_ee_accel
+        self.obs_noise_config = obs_noise_config or {}
+        self.dt = dt
 
         # Calculate expected observation dimension
         self.obs_dim = (
@@ -55,6 +66,7 @@ class ObservationBuilder:
             3 +  # reference velocity
             3 +  # EE linear velocity
             3 +  # EE angular velocity
+            (3 if include_ee_accel else 0) +  # EE linear acceleration (optional)
             n_joints +  # joint positions
             n_joints +  # joint velocities
             6 +  # previous action
@@ -67,7 +79,9 @@ class ObservationBuilder:
         state: RobotState,
         path: Path,
         s_current: float,
-        include_orientation: bool = False
+        include_orientation: bool = False,
+        prev_ee_vel: Optional[np.ndarray] = None,
+        rng: Optional[np.random.Generator] = None,
     ) -> np.ndarray:
         """Build observation vector.
 
@@ -75,7 +89,11 @@ class ObservationBuilder:
             state: Current robot state
             path: Path being tracked
             s_current: Current arc length on path
-            include_orientation: Whether to include orientation error (Step 4)
+            include_orientation: Whether to include orientation error
+            prev_ee_vel: Previous step EE linear velocity (world frame) for
+                         acceleration computation; required when include_ee_accel=True
+            rng: Random generator for observation noise injection; noise is
+                 skipped when None
 
         Returns:
             obs: (obs_dim,) observation vector
@@ -121,6 +139,16 @@ class ObservationBuilder:
         ee_lin_vel_ee = R_ew @ state.ee_lin_vel_world  # (3,)
         ee_ang_vel_ee = R_ew @ state.ee_ang_vel_world  # (3,)
 
+        # (e2) EE linear acceleration in EE frame (optional)
+        if self.include_ee_accel:
+            if prev_ee_vel is not None:
+                ee_accel_world = (state.ee_lin_vel_world - prev_ee_vel) / self.dt
+            else:
+                ee_accel_world = np.zeros(3)
+            ee_accel_ee = R_ew @ ee_accel_world
+        else:
+            ee_accel_ee = None
+
         # (f) Joint state (world frame, but independent of workspace position)
         q_pos = state.joint_pos.copy()  # (n,)
         q_vel = state.joint_vel.copy()  # (n,)
@@ -135,22 +163,47 @@ class ObservationBuilder:
         limit_prox = joint_limit_proximity(q_pos, (self.q_min, self.q_max))  # (n,)
 
         # Assemble observation
-        obs = np.concatenate([
+        parts = [
             pos_err_ee,       # 3
             ori_err_ee,       # 3
             lookahead_ee,     # lookahead_n * 3
             v_ref_ee,         # 3
             ee_lin_vel_ee,    # 3
             ee_ang_vel_ee,    # 3
+        ]
+        if ee_accel_ee is not None:
+            parts.append(ee_accel_ee)   # 3 (optional)
+        parts += [
             q_pos,            # n
             q_vel,            # n
             prev_action,      # 6
             [manip],          # 1
             limit_prox,       # n
-        ]).astype(np.float32)
+        ]
+        obs = np.concatenate(parts).astype(np.float32)
 
         assert obs.shape == (self.obs_dim,), \
             f"Observation shape mismatch: {obs.shape} vs ({self.obs_dim},)"
+
+        # Apply observation noise (training robustness)
+        if rng is not None and self.obs_noise_config:
+            pos_std = self.obs_noise_config.get('obs_noise_pos_std', 0.0)
+            if pos_std > 0:
+                obs[0:3] += rng.normal(0.0, pos_std, 3).astype(np.float32)
+
+            la_std = self.obs_noise_config.get('lookahead_noise_std', 0.0)
+            if la_std > 0:
+                obs[6:6 + self.lookahead_n * 3] += rng.normal(
+                    0.0, la_std, self.lookahead_n * 3
+                ).astype(np.float32)
+
+            vel_std = self.obs_noise_config.get('obs_noise_vel_std', 0.0)
+            if vel_std > 0:
+                # EE linear velocity starts after: pos(3)+ori(3)+lookahead(n*3)+ref_vel(3)
+                vel_start = 3 + 3 + self.lookahead_n * 3 + 3
+                obs[vel_start:vel_start + 3] += rng.normal(
+                    0.0, vel_std, 3
+                ).astype(np.float32)
 
         return obs
 
@@ -174,7 +227,8 @@ class ObservationBuilder:
             self.lookahead_n * 3 +  # lookahead
             3 +  # ref vel
             3 +  # ee lin vel
-            3    # ee ang vel
+            3 +  # ee ang vel
+            (3 if self.include_ee_accel else 0)  # ee accel (optional)
         )
         joint_pos_end = joint_pos_start + self.n_joints
         low[joint_pos_start:joint_pos_end] = self.q_min

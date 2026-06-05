@@ -45,6 +45,8 @@ class EETrackingEnv(gym.Env):
         lookahead_ds: float = 0.02,
         randomize_start_position: bool = False,
         start_position_noise: float = 0.06,
+        include_ee_accel: bool = False,
+        obs_noise_config: Optional[dict] = None,
     ):
         """Initialize environment.
 
@@ -111,7 +113,10 @@ class EETrackingEnv(gym.Env):
         self.obs_builder = ObservationBuilder(
             n_joints=self.n_joints,
             joint_limits=(self.q_min, self.q_max),
-            lookahead_ds=lookahead_ds
+            lookahead_ds=lookahead_ds,
+            include_ee_accel=include_ee_accel,
+            obs_noise_config=obs_noise_config,
+            dt=dt,
         )
 
         self.randomize_start_position = randomize_start_position
@@ -144,6 +149,10 @@ class EETrackingEnv(gym.Env):
         # Episode tracking
         self.step_count = 0
         self.prev_action = np.zeros(6, dtype=np.float32)
+        self.prev_ee_vel = np.zeros(3, dtype=np.float64)
+
+        # Bspline config: set from make_env_with_stage() for per-episode regeneration
+        self._bspline_config: Optional[dict] = None
 
     _Q_NOMINAL = np.array([0.0, -0.3, 0.0, -2.2, 0.0, 2.0, 0.785])
 
@@ -196,6 +205,17 @@ class EETrackingEnv(gym.Env):
         """
         super().reset(seed=seed)
 
+        # Regenerate B-spline path each episode (fresh random shape)
+        if self._bspline_config is not None:
+            from ..paths.path_factory import create_bspline_path
+            self.path = create_bspline_path(
+                center=self._bspline_config['center'],
+                speed=self._bspline_config['speed'],
+                bspline_config=self._bspline_config,
+                rng=self.np_random,
+                min_curvature_radius_override=self._bspline_config.get('min_curvature_radius'),
+            )
+
         # Select orientation mode for this episode (if path supports it)
         if hasattr(self.path, 'reset_orientation_mode'):
             self.path.reset_orientation_mode(self.np_random)
@@ -245,7 +265,8 @@ class EETrackingEnv(gym.Env):
             init_error = np.linalg.norm(ee_pos - target_pos)
             s0_pos = self.path.position(0)
             print(f"\n  Initial EE position: {ee_pos}")
-            print(f"  Circle center: {self.path.center}, radius: {self.path.radius}")
+            if hasattr(self.path, 'center') and hasattr(self.path, 'radius'):
+                print(f"  Path center: {self.path.center}, radius: {self.path.radius}")
             print(f"  Position at s=0: {s0_pos}")
             print(f"  Starting at s={self.s_current:.3f} / {self.path.total_length:.3f} (closest point)")
             print(f"  Target position: {target_pos}")
@@ -255,6 +276,7 @@ class EETrackingEnv(gym.Env):
         # Reset episode state
         self.step_count = 0
         self.prev_action = np.zeros(6, dtype=np.float32)
+        self.prev_ee_vel = np.zeros(3, dtype=np.float64)
 
         # Initialize desired joint position for integrated position control
         self.q_desired = self.data.qpos[:self.n_joints].copy()
@@ -264,8 +286,11 @@ class EETrackingEnv(gym.Env):
 
         # Get initial observation
         state = self._get_robot_state()
-        obs = self.obs_builder.build(state, self.path, self.s_current,
-                                     include_orientation=self.include_orientation)
+        obs = self.obs_builder.build(
+            state, self.path, self.s_current,
+            include_orientation=self.include_orientation,
+            prev_ee_vel=self.prev_ee_vel,
+        )
 
         info = {
             's': self.s_current,
@@ -326,8 +351,12 @@ class EETrackingEnv(gym.Env):
         state_new.prev_action = action  # Update previous action
 
         # Compute observation (use wrapped s for path lookups)
-        obs = self.obs_builder.build(state_new, self.path, s_wrapped,
-                                     include_orientation=self.include_orientation)
+        obs = self.obs_builder.build(
+            state_new, self.path, s_wrapped,
+            include_orientation=self.include_orientation,
+            prev_ee_vel=self.prev_ee_vel,
+            rng=self.np_random,
+        )
 
         # Compute reward
         target_pos = self.path.position(s_wrapped)
@@ -344,13 +373,16 @@ class EETrackingEnv(gym.Env):
             action=action,
             prev_action=self.prev_action,
             joint_vel=state_new.joint_vel,
-            arc_progress=arc_progress
+            arc_progress=arc_progress,
+            prev_ee_vel=self.prev_ee_vel,
+            dt=self.dt,
         )
 
         reward = reward_dict['reward']
 
         # Update state
         self.prev_action = action.copy()
+        self.prev_ee_vel = state_new.ee_lin_vel_world.copy()
         self.step_count += 1
 
         # Episode termination

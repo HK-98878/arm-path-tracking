@@ -21,7 +21,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.environment.ee_tracking_env import EETrackingEnv
-from src.paths import create_path, sample_path_type
+from src.paths import create_path, sample_path_type, create_bspline_path
 from src.rl.ppo import PPO
 from src.utils.config import load_config
 from src.utils.metrics import compute_jitter_metrics, compute_tracking_error_metrics
@@ -292,15 +292,28 @@ def make_env_with_stage(config, stage_params, bidirectional=False, path_type_ove
         path_type = sample_path_type(path_types, path_weights)
 
     # Create path using factory
-    path = create_path(
-        path_type=path_type,
-        center=np.array(config.path.center),
-        radius=config.path.radius,
-        speed=speed,
-        orientation_modes=orientation_modes,
-        rock_amplitude=rock_amplitude,
-        n_oscillations=n_oscillations,
-    )
+    bspline_cfg = None
+    if path_type == 'bspline':
+        bspline_cfg = getattr(config, 'bspline_path', None)
+        bspline_cfg = bspline_cfg.to_dict() if bspline_cfg is not None else {}
+        min_r = stage_params.get('min_curvature_radius', bspline_cfg.get('min_curvature_radius', 0.05))
+        path = create_bspline_path(
+            center=np.array(config.path.center),
+            speed=speed,
+            bspline_config=bspline_cfg,
+            rng=np.random.default_rng(0),  # initial path; env regenerates on reset
+            min_curvature_radius_override=min_r,
+        )
+    else:
+        path = create_path(
+            path_type=path_type,
+            center=np.array(config.path.center),
+            radius=config.path.radius,
+            speed=speed,
+            orientation_modes=orientation_modes,
+            rock_amplitude=rock_amplitude,
+            n_oscillations=n_oscillations,
+        )
 
     # Build reward config with stage overrides
     reward_config = config.reward.to_dict()
@@ -313,6 +326,17 @@ def make_env_with_stage(config, stage_params, bidirectional=False, path_type_ove
 
     # Determine if orientation control is enabled
     include_orientation = reward_config.get('w_ori', 0) > 0
+
+    # Build per-stage observation noise config
+    obs_noise_config = {
+        'obs_noise_pos_std': stage_params.get('obs_noise_pos_std', 0.0),
+        'obs_noise_vel_std': stage_params.get('obs_noise_vel_std', 0.0),
+        'lookahead_noise_std': stage_params.get('lookahead_noise_std', 0.0),
+    }
+    has_noise = any(v > 0 for v in obs_noise_config.values())
+
+    # Whether to include EE acceleration in observation
+    include_ee_accel = getattr(getattr(config, 'env', None), 'include_ee_accel', False)
 
     # Create environment
     env = EETrackingEnv(
@@ -329,7 +353,20 @@ def make_env_with_stage(config, stage_params, bidirectional=False, path_type_ove
         lookahead_ds=getattr(config.env, 'lookahead_ds', 0.02),
         randomize_start_position=getattr(config.env, 'randomize_start_position', False),
         start_position_noise=getattr(config.env, 'start_position_noise', 0.06),
+        include_ee_accel=include_ee_accel,
+        obs_noise_config=obs_noise_config if has_noise else None,
     )
+
+    # Store bspline config on env for per-episode regeneration in reset()
+    if path_type == 'bspline' and bspline_cfg is not None:
+        env._bspline_config = {
+            **bspline_cfg,
+            'center': np.array(config.path.center),
+            'speed': speed,
+            'min_curvature_radius': stage_params.get(
+                'min_curvature_radius', bspline_cfg.get('min_curvature_radius', 0.05)
+            ),
+        }
 
     return env, path_type
 
@@ -486,8 +523,11 @@ def evaluate_multi_path(config, stage_params, agent, obs_rms, num_episodes_per_p
             path_type_override=path_type
         )
 
+        # B-splines are random per episode: run more to get a reliable average
+        n_eps = max(5, num_episodes_per_path) if path_type == 'bspline' else num_episodes_per_path
+
         # Run evaluation
-        metrics = evaluate(env, agent, obs_rms, num_episodes_per_path)
+        metrics = evaluate(env, agent, obs_rms, n_eps)
         per_path_metrics[path_type] = metrics
         env.close()
 

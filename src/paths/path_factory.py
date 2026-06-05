@@ -1,11 +1,12 @@
 """Factory function for creating path instances from config."""
 
 import numpy as np
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Union
 
 from .base_path import Path
 from .circle_path import CirclePath
 from .figure8_path import Figure8Path
+from .bspline_path import BSplinePath
 
 
 def create_path(
@@ -66,8 +67,13 @@ def create_path(
             rock_amplitude=rock_amplitude,
             n_oscillations=n_oscillations,
         )
+    elif path_type == 'bspline':
+        raise ValueError(
+            "BSplinePath cannot be created via create_path() — use create_bspline_path() instead, "
+            "which requires a random generator and bspline config dict."
+        )
     else:
-        raise ValueError(f"Unknown path type: {path_type}. Supported: 'circle', 'figure8'")
+        raise ValueError(f"Unknown path type: {path_type}. Supported: 'circle', 'figure8', 'bspline'")
 
 
 def create_path_from_config(
@@ -109,6 +115,41 @@ def create_path_from_config(
         rock_amplitude=getattr(config.path, 'rock_amplitude', 0.175),
         n_oscillations=getattr(config.path, 'n_oscillations', 2),
         half_width=half_width,
+    )
+
+
+def create_bspline_path(
+    center: np.ndarray,
+    speed: float,
+    bspline_config: Dict,
+    rng: np.random.Generator,
+    min_curvature_radius_override: Optional[float] = None,
+) -> BSplinePath:
+    """Create a random BSplinePath from a config dict.
+
+    Args:
+        center: (3,) workspace centre (same as config.path.center)
+        speed: Path speed in m/s
+        bspline_config: Dict with keys workspace_radius, n_control_points,
+                        n_arc_samples, workspace_violation_prob, violation_magnitude,
+                        and optionally min_curvature_radius
+        rng: NumPy random generator for reproducible sampling
+        min_curvature_radius_override: If set, overrides bspline_config value
+
+    Returns:
+        BSplinePath instance
+    """
+    min_r = min_curvature_radius_override or bspline_config.get('min_curvature_radius', 0.05)
+    return BSplinePath.random(
+        center=np.array(center, dtype=np.float64),
+        workspace_radius=bspline_config.get('workspace_radius', 0.18),
+        speed=speed,
+        n_control_points=bspline_config.get('n_control_points', 7),
+        rng=rng,
+        min_curvature_radius=min_r,
+        workspace_violation_prob=bspline_config.get('workspace_violation_prob', 0.0),
+        violation_magnitude=bspline_config.get('violation_magnitude', 0.0),
+        n_arc_samples=bspline_config.get('n_arc_samples', 1000),
     )
 
 
