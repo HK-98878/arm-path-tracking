@@ -125,6 +125,48 @@ def compute_tracking_error_metrics(
     return metrics
 
 
+def compute_ee_jerk_metrics(
+    ee_positions: np.ndarray,
+    dt: float,
+) -> Dict[str, float]:
+    """Compute jerk metrics from EE position time series (true kinematic jerk).
+
+    Uses the third derivative of position, which is the physically meaningful
+    jerk measure for motion smoothness regardless of controller type.
+
+    Args:
+        ee_positions: (T, 3) end-effector positions over time
+        dt: Time step (seconds)
+
+    Returns:
+        Dictionary with:
+        - integrated_squared_jerk: ∫ ||jerk||^2 dt
+        - rms_jerk: RMS jerk magnitude
+        - max_jerk: Peak jerk magnitude
+    """
+    if len(ee_positions) < 4:
+        return {
+            'integrated_squared_jerk': 0.0,
+            'rms_jerk': 0.0,
+            'max_jerk': 0.0,
+        }
+
+    vel = np.diff(ee_positions, axis=0) / dt       # (T-1, 3)
+    accel = np.diff(vel, axis=0) / dt              # (T-2, 3)
+    jerk = np.diff(accel, axis=0) / dt             # (T-3, 3)
+
+    jerk_sq = np.sum(jerk ** 2, axis=1)            # (T-3,)
+    integrated_squared_jerk = np.trapezoid(jerk_sq, dx=dt)
+    rms_jerk = float(np.sqrt(np.mean(jerk_sq)))
+    max_jerk = float(np.sqrt(np.max(jerk_sq)))
+
+    return {
+        'integrated_squared_jerk': float(integrated_squared_jerk),
+        'rms_jerk': rms_jerk,
+        'max_jerk': max_jerk,
+    }
+
+
 def compute_velocity_matching_error(
     ee_velocities: np.ndarray,
     target_velocities: np.ndarray

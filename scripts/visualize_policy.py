@@ -32,7 +32,7 @@ from src.paths import create_path
 from src.rl.ppo import PPO
 from src.utils.config import load_config
 from src.utils.normalization import RunningMeanStd
-from src.utils.metrics import compute_jitter_metrics, compute_tracking_error_metrics
+from src.utils.metrics import compute_jitter_metrics, compute_tracking_error_metrics, compute_ee_jerk_metrics
 from src.visualization.episode_recorder import EpisodeRecorder
 from src.visualization.mujoco_renderer import VideoRecorder, InteractiveViewer
 from src.visualization.trajectory_plotter import TrajectoryPlotter
@@ -66,6 +66,10 @@ def parse_args():
                        help='Use deterministic policy (mean action)')
     parser.add_argument('--feedforward-only', action='store_true',
                        help='Use zero actions (pure feedforward, no policy)')
+    parser.add_argument('--p-control', action='store_true',
+                       help='Use proportional EE-to-target feedback (no RL policy)')
+    parser.add_argument('--p-control-gain', type=float, default=1.0,
+                       help='P-controller gain (default 1.0 = correct full error per step)')
     parser.add_argument('--reverse-path', action='store_true',
                        help='Reverse path direction (negative speed)')
     parser.add_argument('--fixed-start', action='store_true',
@@ -155,8 +159,22 @@ def create_agent(config, env, device='cpu'):
     return agent
 
 
+def compute_p_control_action(state, target_pos, action_scale, gain):
+    """Proportional feedback: correct EE-to-path-point delta.
+
+    Error is computed in world frame then rotated into EE frame to match
+    the action convention (policy outputs are EE-frame residuals).
+    """
+    error_world = target_pos - state.ee_pos_world       # (3,) world frame
+    error_ee = state.ee_rot_world.T @ error_world       # EE frame
+    action = np.zeros(6, dtype=np.float32)
+    action[:3] = gain * error_ee / action_scale[:3]
+    return np.clip(action, -1.0, 1.0)
+
+
 def run_episode(env, agent, obs_rms, video_recorder=None,
-                episode_recorder=None, deterministic=True, feedforward_only=False):
+                episode_recorder=None, deterministic=True,
+                feedforward_only=False, p_control=False, p_control_gain=1.0):
     """Run single episode with optional recording.
 
     Returns:
@@ -171,16 +189,20 @@ def run_episode(env, agent, obs_rms, video_recorder=None,
 
     step = 0
     while not done:
+        # Get current state (needed for P-control and recording)
+        state = env._get_robot_state()
+        target_pos = env.path.position(env.s_current % env.path.total_length)
+        s_current = env.s_current
+
         # Select action
         if feedforward_only:
             action = np.zeros(env.action_space.shape[0])
+        elif p_control:
+            action = compute_p_control_action(
+                state, target_pos, env.action_scale, p_control_gain
+            )
         else:
             action, _, _ = agent.select_action(obs, deterministic=deterministic)
-
-        # Get current state for recording
-        state = env._get_robot_state()
-        target_pos = env.path.position(env.s_current)
-        s_current = env.s_current
 
         # Step environment
         next_obs, reward, terminated, truncated, info = env.step(action)
@@ -254,23 +276,31 @@ def create_plots(episode_data, output_dir, episode_idx, dt):
     print(f"  Plots saved to {output_dir}/")
 
 
-def compute_and_print_metrics(episode_data, dt):
+def compute_and_print_metrics(episode_data, dt, feedforward_only=False, p_control=False):
     """Compute and print episode metrics."""
-    # Jitter
-    jitter = compute_jitter_metrics(episode_data['actions'], dt)
-
     # Tracking error
     tracking = compute_tracking_error_metrics(
         episode_data['ee_positions'],
         episode_data['target_positions']
     )
 
+    # EE kinematic jerk — always computed so feedforward and on-policy are comparable
+    ee_jerk = compute_ee_jerk_metrics(episode_data['ee_positions'], dt)
+
     print("\n  Metrics:")
     print(f"    Mean position error: {tracking['mean_position_error']*1000:.2f} mm")
     print(f"    Max position error: {tracking['max_position_error']*1000:.2f} mm")
     print(f"    RMS position error: {tracking['rms_position_error']*1000:.2f} mm")
-    print(f"    Integrated squared jerk: {jitter['integrated_squared_jerk']:.6f}")
-    print(f"    High-freq power ratio: {jitter['high_freq_power_ratio']:.4f}")
+    print(f"    EE integrated squared jerk: {ee_jerk['integrated_squared_jerk']:.6f} m²/s⁵")
+    print(f"    EE RMS jerk: {ee_jerk['rms_jerk']:.6f} m/s³")
+    print(f"    EE max jerk: {ee_jerk['max_jerk']:.6f} m/s³")
+
+    if not feedforward_only and not p_control:
+        # Action-space jitter is policy-specific — useful for diagnosing the RL controller
+        jitter = compute_jitter_metrics(episode_data['actions'], dt)
+        print(f"    Action jerk (policy): {jitter['integrated_squared_jerk']:.6f}")
+        print(f"    High-freq power ratio: {jitter['high_freq_power_ratio']:.4f}")
+
     print(f"    Total reward: {episode_data['rewards'].sum():.2f}")
 
 
@@ -307,11 +337,13 @@ def main():
     obs_rms = RunningMeanStd(shape=env.observation_space.shape)
     agent = None
 
-    if args.feedforward_only:
-        print("\nSkipping checkpoint load (feedforward-only mode)")
+    no_policy = args.feedforward_only or args.p_control
+    if no_policy:
+        mode_label = "FEEDFORWARD-ONLY" if args.feedforward_only else f"P-CONTROL (gain={args.p_control_gain})"
+        print(f"\nSkipping checkpoint load ({mode_label} mode)")
     else:
         if args.checkpoint is None:
-            raise ValueError("--checkpoint required unless using --feedforward-only")
+            raise ValueError("--checkpoint required unless using --feedforward-only or --p-control")
         if not os.path.exists(args.checkpoint):
             raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
 
@@ -326,8 +358,8 @@ def main():
     data_storage = EpisodeDataStorage() if args.save_data else None
 
     # Run episodes
-    if args.feedforward_only:
-        print(f"\n*** FEEDFORWARD-ONLY MODE: Using zero actions (no policy) ***")
+    if no_policy:
+        print(f"\n*** {mode_label} MODE ***")
     print(f"\nRunning {args.episodes} episode(s)...")
     for ep in range(args.episodes):
         print(f"\nEpisode {ep + 1}/{args.episodes}")
@@ -347,22 +379,26 @@ def main():
         episode_recorder = EpisodeRecorder() if (args.save_data or args.save_plots or args.mode == 'plot') else None
 
         # Run episode
+        run_kwargs = dict(
+            deterministic=args.deterministic,
+            feedforward_only=args.feedforward_only,
+            p_control=args.p_control,
+            p_control_gain=args.p_control_gain,
+        )
         if args.mode == 'viewer':
             # Interactive viewer mode
             viewer = InteractiveViewer(env.model, env.data)
             episode_data = viewer.run_episode(
                 env, agent, obs_rms,
                 episode_recorder=episode_recorder,
-                deterministic=args.deterministic,
-                feedforward_only=args.feedforward_only
+                **run_kwargs
             )
         elif args.mode == 'plot':
             plotter_traj = TrajectoryPlotter()
             episode_data = run_episode(
                 env, agent, obs_rms,
                 episode_recorder=episode_recorder,
-                deterministic=args.deterministic,
-                feedforward_only=args.feedforward_only
+                **run_kwargs
             )
             # Interactive playback with slider
             plotter_traj.plot_3d_playback(
@@ -376,8 +412,7 @@ def main():
                 env, agent, obs_rms,
                 video_recorder=video_recorder,
                 episode_recorder=episode_recorder,
-                deterministic=args.deterministic,
-                feedforward_only=args.feedforward_only
+                **run_kwargs
             )
 
         # Save video
@@ -387,7 +422,11 @@ def main():
         # Process data
         if episode_data is not None:
             # Compute metrics
-            compute_and_print_metrics(episode_data, env.dt)
+            compute_and_print_metrics(
+                episode_data, env.dt,
+                feedforward_only=args.feedforward_only,
+                p_control=args.p_control,
+            )
 
             # Generate plots
             if args.save_plots:

@@ -60,16 +60,19 @@ class InteractiveViewer:
         self.data = data
 
     def run_episode(self, env, agent, obs_rms, episode_recorder=None,
-                    deterministic=True, feedforward_only=False):
+                    deterministic=True, feedforward_only=False,
+                    p_control=False, p_control_gain=1.0):
         """Run episode with interactive viewer.
 
         Args:
             env: Gymnasium environment
-            agent: PPO agent (can be None if feedforward_only=True)
+            agent: PPO agent (can be None if feedforward_only/p_control)
             obs_rms: Observation normalization stats
             episode_recorder: Optional EpisodeRecorder for data collection
             deterministic: Use deterministic policy
             feedforward_only: Use zero actions (pure feedforward, no policy)
+            p_control: Use proportional EE-to-target feedback
+            p_control_gain: Gain for P-controller
 
         Returns:
             episode_data: Dict if episode_recorder provided, else None
@@ -94,17 +97,22 @@ class InteractiveViewer:
             while viewer.is_running() and not done:
                 step_start = time.time()
 
+                state = env._get_robot_state()
+                target_pos = env.path.position(env.s_current % env.path.total_length)
+
                 # Select action
                 if feedforward_only:
                     action = np.zeros(env.action_space.shape[0])
+                elif p_control:
+                    error_world = target_pos - state.ee_pos_world
+                    error_ee = state.ee_rot_world.T @ error_world
+                    action = np.zeros(env.action_space.shape[0], dtype=np.float32)
+                    action[:3] = p_control_gain * error_ee / env.action_scale[:3]
+                    action = np.clip(action, -1.0, 1.0)
                 else:
                     action, _, _ = agent.select_action(obs, deterministic=deterministic)
 
-                # Get current state for recording
-                if episode_recorder:
-                    state = env._get_robot_state()
-                    target_pos = env.path.position(env.s_current)
-                    s_current = env.s_current
+                s_current = env.s_current
 
                 # Step environment
                 next_obs, reward, terminated, truncated, info = env.step(action)
