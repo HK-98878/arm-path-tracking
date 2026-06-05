@@ -5,9 +5,24 @@
 #   - w_vel_match removed (was causing near-path oscillation vs action_rate)
 #   - w_ee_jerk added: physical EE jerk penalty in workspace (m/s^2)^2
 #   - w_action_rate reduced: now secondary to EE jerk + CAPS
-#   - BSplinePath added in stages 2-3 for path generalisation
-#   - Observation noise ramped through curriculum for robustness
+#   - BSplinePath added from stage 2 onward for path generalisation
 #   - Circles and figure-8s retained throughout as demo/training paths
+#
+# Run 67 lessons (4-stage design):
+#   - Stage 2 forced advance via max_steps=500k before bspline converged;
+#     stage 3 then applied sig_pos=0.02 + bspline_weight=0.6 + speed=0.20 simultaneously
+#     → immediate catastrophic forgetting of circle/fig8
+#   - Bspline introduced at speed=0.15 simultaneously with sig_pos tightening;
+#     with sig_pos=0.05 the bspline gradient at 100mm initial error is only ~13% of max
+#   - Best circle before collapse: 9.4mm at step 660k (approaching Run 58 baseline)
+#
+# Run 68 fixes (5-stage design):
+#   - Stages 0-1 unchanged (identical to working Run 58 curriculum)
+#   - Stage 2: bspline introduced at SAME speed as stage 1 (0.10 m/s), low weight (0.15),
+#     sig_pos=0.10 → pos_quality=0.61 at 100mm bspline initial error (vs 0.13 before)
+#   - Stages 3-4: progressive speed/weight increase, one variable at a time
+#   - No max_steps fallback on stages 2-3 (avoid forced premature transitions)
+#   - Noise deferred to stage 4 only
 
 # Environment
 env:
@@ -58,7 +73,7 @@ reward:
   w_action_rate: 0.05  # reduced from 0.1; now secondary to EE jerk
   w_joint_vel: 0.001
   w_ee_jerk: 0.1       # EE acceleration penalty (m/s^2)^2, gated by pos_quality
-  ee_jerk_scale: 1000.0  # calibrated so random-policy penalty ~5% of r_pos; accel_sq ~500 random vs ~0.005 trained
+  ee_jerk_scale: 1000.0  # ~5% of r_pos at random-policy accel levels
   w_vel_match: 0.0     # removed: was causing near-path oscillation
   sig_pos: 0.15        # overridden per stage
   sig_ori: 0.50        # overridden per stage
@@ -96,7 +111,7 @@ caps:
 
 # Training
 training:
-  total_timesteps: 1500000
+  total_timesteps: 3000000
   eval_frequency: 10000
   save_frequency: 50000
   log_frequency: 1000
@@ -112,23 +127,25 @@ logging:
 
 seed: 42
 
-# Curriculum: 4 stages
-#   Stage 0-1: circle/fig8 only (identical to multipath_deeper for fast early learning)
-#   Stage 2: introduce low-curvature B-splines + small obs noise
-#   Stage 3: sharper B-splines + target obs noise levels
+# Curriculum: 5 stages
+#
+# Advance criterion: mean pos_error across ALL active path types must be below
+#   advance_threshold for consecutive_evals consecutive evaluations.
+#   With bspline in the pool, the mean is dominated by bspline (~100-200mm early on).
+#   Thresholds are set so that circle/fig8 at ~12mm + bspline at ~Xmm = achievable mean.
+#
+# Per-stage bspline key:
+#   min_curvature_radius: Minimum allowed radius of curvature (m) for generated splines
 #
 # Per-stage noise keys (read by make_env_with_stage):
 #   obs_noise_pos_std: Gaussian std on position error obs (metres)
 #   obs_noise_vel_std: Gaussian std on EE velocity obs (m/s)
 #   lookahead_noise_std: Gaussian std on each lookahead point coord (metres)
-#
-# Per-stage bspline key:
-#   min_curvature_radius: Minimum allowed radius of curvature (m) for generated splines
 
 curriculum:
   enabled: true
   stages:
-    # Stage 0: circle only, slow, no noise
+    # Stage 0: circle only, slow — identical to multipath_deeper (Run 58)
     - speed: 0.05
       sig_pos: 0.15
       sig_ori: 0.50
@@ -140,9 +157,9 @@ curriculum:
       obs_noise_vel_std: 0.0
       lookahead_noise_std: 0.0
       advance_threshold: 0.08
-      max_steps: 500000
+      max_steps: 300000
 
-    # Stage 1: circle + figure-8, no noise
+    # Stage 1: circle + figure-8 — identical to multipath_deeper (Run 58)
     - speed: 0.10
       sig_pos: 0.10
       sig_ori: 0.25
@@ -154,37 +171,70 @@ curriculum:
       obs_noise_vel_std: 0.0
       lookahead_noise_std: 0.0
       advance_threshold: 0.06
-      max_steps: 500000
+      max_steps: 400000
 
-    # Stage 2: add low-curvature B-splines (r >= 100mm), small noise
-    - speed: 0.15
-      sig_pos: 0.05
-      sig_ori: 0.15
-      w_ori: 0.7
+    # Stage 2: introduce bspline gently at SAME speed as stage 1
+    #   - Speed unchanged (0.10): don't simultaneously increase speed and add new path type
+    #   - sig_pos=0.10 (unchanged): at 100mm bspline initial error, pos_quality=0.61 (not 0.13)
+    #   - bspline weight=0.15: circle/fig8 still dominate; bspline is exposure, not primary signal
+    #   - min_curvature_radius=0.12: gentler splines to start
+    #   - Advance: (circle~12 + fig8~12 + bspline~186) / 3 < 70mm → achievable
+    #   - No max_steps: never force transition if bspline hasn't converged
+    - speed: 0.10
+      sig_pos: 0.10
+      sig_ori: 0.25
+      w_ori: 0.6
       orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
-      path_weights: [0.3, 0.3, 0.4]
-      obs_noise_pos_std: 0.003
-      obs_noise_vel_std: 0.005
-      lookahead_noise_std: 0.004
-      min_curvature_radius: 0.10
-      advance_threshold: 0.04
-      max_steps: 500000
+      path_weights: [0.55, 0.30, 0.15]
+      obs_noise_pos_std: 0.0
+      obs_noise_vel_std: 0.0
+      lookahead_noise_std: 0.0
+      min_curvature_radius: 0.12
+      advance_threshold: 0.07
+      max_steps: null
 
-    # Stage 3: all paths, sharper B-splines (r >= 60mm), target noise levels
+    # Stage 3: increase speed, increase bspline weight moderately
+    #   - Speed 0.10 → 0.15: only variable changing besides bspline weight
+    #   - sig_pos=0.06: slightly tighter; at 100mm bspline error, pos_quality=0.25
+    #   - bspline weight=0.30: more generalisation signal
+    #   - min_curvature_radius=0.09: moderate curvature
+    #   - Advance: (circle~15 + fig8~18 + bspline~147) / 3 < 60mm → bspline must reach ~147mm
+    #   - No max_steps
+    - speed: 0.15
+      sig_pos: 0.06
+      sig_ori: 0.20
+      w_ori: 0.8
+      orientation_modes: ['fixed']
+      path_types: ['circle', 'figure8', 'bspline']
+      path_weights: [0.45, 0.25, 0.30]
+      obs_noise_pos_std: 0.0
+      obs_noise_vel_std: 0.0
+      lookahead_noise_std: 0.0
+      min_curvature_radius: 0.09
+      advance_threshold: 0.06
+      max_steps: null
+
+    # Stage 4: full speed, high bspline weight, introduce noise
+    #   - Speed 0.15 → 0.20
+    #   - sig_pos=0.03: tight but not extreme
+    #   - bspline weight=0.50: equal partner with circle/fig8 combined
+    #   - min_curvature_radius=0.07: sharper splines
+    #   - Noise introduced here only, once policy is otherwise stable
+    #   - Final stage, no advance threshold
     - speed: 0.20
-      sig_pos: 0.02
-      sig_ori: 0.10
+      sig_pos: 0.03
+      sig_ori: 0.12
       w_ori: 1.0
       orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
-      path_weights: [0.2, 0.2, 0.6]
-      obs_noise_pos_std: 0.005
-      obs_noise_vel_std: 0.010
-      lookahead_noise_std: 0.006
-      min_curvature_radius: 0.06
+      path_weights: [0.25, 0.25, 0.50]
+      obs_noise_pos_std: 0.003
+      obs_noise_vel_std: 0.005
+      lookahead_noise_std: 0.004
+      min_curvature_radius: 0.07
       advance_threshold: null
-      max_steps: 1500000
+      max_steps: 2000000
 
   consecutive_evals: 5
   warmup_after_transition: 10000

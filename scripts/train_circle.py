@@ -67,7 +67,7 @@ class CurriculumManager:
 
         stage = self.stages[self.current_stage]
         threshold = stage.get('advance_threshold')
-        max_steps = stage.get('max_steps', 200000)
+        max_steps = stage.get('max_steps')  # None means no step-count fallback
 
         # Threshold met for consecutive evals
         if threshold and len(self.eval_history) >= self.consecutive_evals:
@@ -75,8 +75,8 @@ class CurriculumManager:
             if all(e < threshold for e in recent):
                 return True
 
-        # Fallback: max steps in stage
-        if self.steps_in_stage >= max_steps:
+        # Fallback: max steps in stage (skipped when max_steps is null/None)
+        if max_steps is not None and self.steps_in_stage >= max_steps:
             return True
 
         return False
