@@ -60,7 +60,7 @@ reward:
   ori_linear_fallback_max: 3.14
   vel_gate_max: 0.15
   vel_reward_type: arc_length
-  w_vel_match: 1.0
+  w_vel_match: 0.3
   vel_match_gate_max: 0.05   # 50 mm — stricter than vel_gate_max (150 mm)
 
 # PPO
