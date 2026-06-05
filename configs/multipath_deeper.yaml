@@ -12,7 +12,7 @@ env:
   dt: 0.01  # 100 Hz control
   max_episode_steps: 1000
   ee_body_name: "attachment"
-  lookahead_ds: 0.02
+  lookahead_ds: 0.04
   randomize_start_position: true
   start_position_noise: 0.06  # 60mm sphere radius around random path point
 
@@ -156,7 +156,7 @@ curriculum:
       w_ori: 1.0
       orientation_modes: ['fixed']
       path_types: ['circle', 'figure8']
-      path_weights: [0.5, 0.5]
+      path_weights: [0.3, 0.7]
       advance_threshold: null
       max_steps: 1000000
 
