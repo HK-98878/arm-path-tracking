@@ -124,6 +124,7 @@ def create_bspline_path(
     bspline_config: Dict,
     rng: np.random.Generator,
     min_curvature_radius_override: Optional[float] = None,
+    orientation_modes: Optional[List[str]] = None,
 ) -> BSplinePath:
     """Create a random BSplinePath from a config dict.
 
@@ -140,6 +141,7 @@ def create_bspline_path(
         BSplinePath instance
     """
     min_r = min_curvature_radius_override or bspline_config.get('min_curvature_radius', 0.05)
+    modes = orientation_modes or bspline_config.get('orientation_modes', ['fixed'])
     return BSplinePath.random(
         center=np.array(center, dtype=np.float64),
         workspace_radius=bspline_config.get('workspace_radius', 0.18),
@@ -150,6 +152,7 @@ def create_bspline_path(
         workspace_violation_prob=bspline_config.get('workspace_violation_prob', 0.0),
         violation_magnitude=bspline_config.get('violation_magnitude', 0.0),
         n_arc_samples=bspline_config.get('n_arc_samples', 1000),
+        orientation_modes=modes,
     )
 
 

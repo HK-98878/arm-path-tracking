@@ -214,6 +214,7 @@ class EETrackingEnv(gym.Env):
                 bspline_config=self._bspline_config,
                 rng=self.np_random,
                 min_curvature_radius_override=self._bspline_config.get('min_curvature_radius'),
+                orientation_modes=self._bspline_config.get('orientation_modes'),
             )
 
         # Select orientation mode for this episode (if path supports it)

@@ -27,11 +27,15 @@ class BSplinePath(Path):
     Arc-length parameterisation: numerical, same pattern as Figure8Path.
     """
 
+    # Fixed z-down orientation: 180° about Y (same as CirclePath fixed mode)
+    _FIXED_QUAT = np.array([0.0, 1.0, 0.0, 0.0])
+
     def __init__(
         self,
         control_points: np.ndarray,
         speed: float,
         n_arc_samples: int = 1000,
+        orientation_modes: list = None,
     ):
         """Initialise B-spline path.
 
@@ -39,11 +43,15 @@ class BSplinePath(Path):
             control_points: (N, 3) control points; N >= 4 for cubic spline
             speed: Constant path speed (m/s); negative for reverse direction
             n_arc_samples: Resolution of arc-length and RMF lookup tables
+            orientation_modes: List of allowed modes, e.g. ['fixed'] or ['rmf'].
+                Defaults to ['fixed'] (z-down, same as circle/figure8).
         """
         super().__init__()
 
         self.speed = speed
         self._n_arc_samples = n_arc_samples
+        self._orientation_modes = orientation_modes if orientation_modes else ['fixed']
+        self._orientation_mode = self._orientation_modes[0]
 
         self._fit_spline(np.array(control_points, dtype=np.float64))
         self._build_arc_length_table()
@@ -175,13 +183,13 @@ class BSplinePath(Path):
         return float(np.linalg.norm(cross) / denom)
 
     def orientation(self, s: float) -> np.ndarray:
+        if self._orientation_mode == 'fixed':
+            return self._FIXED_QUAT.copy()
         return self._rmf_at_s(s)
 
     def angular_velocity(self, s: float) -> np.ndarray:
-        """Angular velocity from finite-difference of RMF orientation.
-
-        omega = d(orientation)/dt = d(orientation)/ds * speed
-        """
+        if self._orientation_mode == 'fixed':
+            return np.zeros(3)
         eps = self.total_length / self._n_arc_samples
         q0 = self._rmf_at_s(s)
         q1 = self._rmf_at_s(s + eps)
@@ -191,8 +199,11 @@ class BSplinePath(Path):
         return rotvec * (self.speed / eps)
 
     def reset_orientation_mode(self, rng=None) -> None:
-        """No-op: B-splines use RMF orientation, no discrete modes."""
-        pass
+        """Select orientation mode for this episode."""
+        if rng is not None:
+            self._orientation_mode = rng.choice(self._orientation_modes)
+        else:
+            self._orientation_mode = self._orientation_modes[0]
 
     # ---- Random factory ----
 
@@ -209,6 +220,7 @@ class BSplinePath(Path):
         violation_magnitude: float = 0.0,
         n_arc_samples: int = 1000,
         max_retries: int = 20,
+        orientation_modes: list = None,
     ) -> 'BSplinePath':
         """Generate a random closed B-spline path.
 
@@ -240,7 +252,7 @@ class BSplinePath(Path):
                 center, workspace_radius, n_control_points, rng,
                 workspace_violation_prob, violation_magnitude
             )
-            path = cls(pts, speed, n_arc_samples)
+            path = cls(pts, speed, n_arc_samples, orientation_modes=orientation_modes)
             min_r = cls._min_curvature_radius(path)
 
             if min_r > min_curvature_radius:

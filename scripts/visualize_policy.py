@@ -29,6 +29,7 @@ sys.path.insert(0, str(project_root))
 
 from src.environment.ee_tracking_env import EETrackingEnv
 from src.paths import create_path
+from src.paths.path_factory import create_bspline_path
 from src.rl.ppo import PPO
 from src.utils.config import load_config
 from src.utils.normalization import RunningMeanStd
@@ -75,8 +76,10 @@ def parse_args():
     parser.add_argument('--fixed-start', action='store_true',
                         help='Force fixed nominal start position regardless of config')
     parser.add_argument('--path-type', type=str, default='circle',
-                       choices=['circle', 'figure8'],
+                       choices=['circle', 'figure8', 'bspline'],
                        help='Path type to visualize')
+    parser.add_argument('--bspline-seed', type=int, default=None,
+                       help='RNG seed for bspline path generation. Omit for a random spline each episode.')
     parser.add_argument('--render-width', type=int, default=640,
                        help='Render width')
     parser.add_argument('--render-height', type=int, default=480,
@@ -91,7 +94,8 @@ def setup_mujoco_gl(mode):
     print(f"Using MUJOCO_GL={gl_backend}")
 
 
-def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='circle', fixed_start=False):
+def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='circle',
+             fixed_start=False, bspline_seed=None):
     """Create environment from config."""
     speed = config.path.speed
     if reverse_path:
@@ -103,19 +107,31 @@ def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='cir
     rock_amplitude = getattr(config.path, 'rock_amplitude', 0.175)
     n_oscillations = getattr(config.path, 'n_oscillations', 2)
 
-    path = create_path(
-        path_type=path_type,
-        center=np.array(config.path.center),
-        radius=config.path.radius,
-        speed=speed,
-        orientation_modes=orientation_modes,
-        rock_amplitude=rock_amplitude,
-        n_oscillations=n_oscillations,
-    )
-    print(f"  Path: {path}")
-
     # Enable orientation if w_ori > 0
     include_orientation = getattr(config.reward, 'w_ori', 0) > 0
+
+    if path_type == 'bspline':
+        bspline_cfg_obj = getattr(config, 'bspline_path', None)
+        bspline_cfg = bspline_cfg_obj.to_dict() if bspline_cfg_obj is not None else {}
+        seed_for_init = bspline_seed if bspline_seed is not None else 0
+        path = create_bspline_path(
+            center=np.array(config.path.center),
+            speed=speed,
+            bspline_config=bspline_cfg,
+            rng=np.random.default_rng(seed_for_init),
+        )
+        print(f"  Path: bspline (seed={'fixed:' + str(bspline_seed) if bspline_seed is not None else 'random per episode'})")
+    else:
+        path = create_path(
+            path_type=path_type,
+            center=np.array(config.path.center),
+            radius=config.path.radius,
+            speed=speed,
+            orientation_modes=orientation_modes,
+            rock_amplitude=rock_amplitude,
+            n_oscillations=n_oscillations,
+        )
+        print(f"  Path: {path}")
 
     env = EETrackingEnv(
         model_path=str(project_root / config.env.model_path),
@@ -132,6 +148,19 @@ def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='cir
         randomize_start_position=False if fixed_start else getattr(config.env, 'randomize_start_position', False),
         start_position_noise=getattr(config.env, 'start_position_noise', 0.06),
     )
+
+    if path_type == 'bspline':
+        bspline_cfg_obj = getattr(config, 'bspline_path', None)
+        bspline_cfg = bspline_cfg_obj.to_dict() if bspline_cfg_obj is not None else {}
+        env._bspline_config = {
+            **bspline_cfg,
+            'center': np.array(config.path.center),
+            'speed': speed,
+        }
+        # Pin the RNG seed so every episode generates the same spline sequence,
+        # or leave it unset for a fresh random spline each episode.
+        if bspline_seed is not None:
+            env.np_random = np.random.default_rng(bspline_seed)
 
     return env
 
@@ -329,7 +358,9 @@ def main():
     # Create environment
     print("Creating environment...")
     render_mode = 'rgb_array' if args.mode in ['video', 'headless'] else None
-    env = make_env(config, render_mode=render_mode, reverse_path=args.reverse_path, path_type=args.path_type, fixed_start=args.fixed_start)
+    env = make_env(config, render_mode=render_mode, reverse_path=args.reverse_path,
+                   path_type=args.path_type, fixed_start=args.fixed_start,
+                   bspline_seed=args.bspline_seed)
     print(f"  Observation space: {env.observation_space.shape}")
     print(f"  Action space: {env.action_space.shape}")
 

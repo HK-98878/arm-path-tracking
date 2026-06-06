@@ -307,6 +307,7 @@ def make_env_with_stage(config, stage_params, bidirectional=False, path_type_ove
             bspline_config=bspline_cfg,
             rng=np.random.default_rng(0),  # initial path; env regenerates on reset
             min_curvature_radius_override=min_r,
+            orientation_modes=orientation_modes,
         )
     else:
         path = create_path(
@@ -370,6 +371,7 @@ def make_env_with_stage(config, stage_params, bidirectional=False, path_type_ove
             'min_curvature_radius': stage_params.get(
                 'min_curvature_radius', bspline_cfg.get('min_curvature_radius', 0.05)
             ),
+            'orientation_modes': orientation_modes,
         }
 
     return env, path_type
