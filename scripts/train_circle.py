@@ -24,7 +24,7 @@ from src.environment.ee_tracking_env import EETrackingEnv
 from src.paths import create_path, sample_path_type, create_bspline_path
 from src.rl.ppo import PPO
 from src.utils.config import load_config
-from src.utils.metrics import compute_jitter_metrics, compute_tracking_error_metrics
+from src.utils.metrics import compute_jitter_metrics, compute_tracking_error_metrics, compute_ee_jerk_metrics
 from src.utils.normalization import RunningMeanStd, RewardNormalizer
 
 
