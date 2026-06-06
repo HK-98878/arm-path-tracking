@@ -11,6 +11,7 @@ import mujoco
 from .robot_state import RobotState
 from .observation import ObservationBuilder
 from ..paths.base_path import Path
+from ..paths.bspline_path import BSplinePath
 from ..control.dls_jacobian import DLSController, compute_jacobian_mujoco
 from ..rewards.tracking_reward import TrackingReward
 from ..utils.kinematics import quat_to_matrix, rotation_error_rotvec
@@ -224,9 +225,13 @@ class EETrackingEnv(gym.Env):
         # Reset MuJoCo simulation
         mujoco.mj_resetData(self.model, self.data)
 
-        # Compute initial joint configuration
-        if self.randomize_start_position:
-            s_phase = self.np_random.uniform(0.0, self.path.total_length)
+        # Compute initial joint configuration.
+        # For open bspline paths, always start at s=0 so IK targets the path
+        # start point (a workspace-sphere sample) rather than the nominal pose,
+        # which reduces initial tracking error from ~100mm to IK residual (~5mm).
+        path_is_open = isinstance(self.path, BSplinePath) and not self.path.closed
+        if self.randomize_start_position or path_is_open:
+            s_phase = 0.0 if path_is_open else self.np_random.uniform(0.0, self.path.total_length)
             p_on_path = self.path.position(s_phase)
             noise_dir = self.np_random.standard_normal(3)
             noise_dir /= np.linalg.norm(noise_dir)
@@ -252,13 +257,16 @@ class EETrackingEnv(gym.Env):
         self.data.qvel[:self.n_joints] = 0.0
         mujoco.mj_forward(self.model, self.data)
 
-        # Find closest point on path to start tracking
+        # Find starting arc-length position.
+        # Open bspline paths always start at s=0 (IK already targeted path start).
+        # All other paths find the closest point on the path to the current EE position.
         ee_pos = self.data.xpos[self.ee_body_id]
-
-        s_samples = np.linspace(0, self.path.total_length, 100)
-        errors = [np.linalg.norm(ee_pos - self.path.position(s)) for s in s_samples]
-        closest_idx = np.argmin(errors)
-        self.s_current = s_samples[closest_idx]
+        if path_is_open:
+            self.s_current = 0.0
+        else:
+            s_samples = np.linspace(0, self.path.total_length, 100)
+            errors = [np.linalg.norm(ee_pos - self.path.position(s)) for s in s_samples]
+            self.s_current = s_samples[int(np.argmin(errors))]
 
         # Print initial EE position for debugging (first reset only)
         if not hasattr(self, '_printed_init_pos'):
@@ -397,7 +405,9 @@ class EETrackingEnv(gym.Env):
         self.step_count += 1
 
         # Episode termination
-        terminated = False  # No early termination for now
+        # Open bspline paths terminate naturally when the full path is traversed.
+        path_is_open = isinstance(self.path, BSplinePath) and not self.path.closed
+        terminated = path_is_open and self.s_current >= self.path.total_length
         truncated = self.step_count >= self.max_episode_steps
 
         # Info

@@ -153,6 +153,7 @@ def create_bspline_path(
         violation_magnitude=bspline_config.get('violation_magnitude', 0.0),
         n_arc_samples=bspline_config.get('n_arc_samples', 1000),
         orientation_modes=modes,
+        closed=bspline_config.get('closed', False),
     )
 
 

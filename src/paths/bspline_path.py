@@ -36,6 +36,7 @@ class BSplinePath(Path):
         speed: float,
         n_arc_samples: int = 1000,
         orientation_modes: list = None,
+        closed: bool = False,
     ):
         """Initialise B-spline path.
 
@@ -45,10 +46,13 @@ class BSplinePath(Path):
             n_arc_samples: Resolution of arc-length and RMF lookup tables
             orientation_modes: List of allowed modes, e.g. ['fixed'] or ['rmf'].
                 Defaults to ['fixed'] (z-down, same as circle/figure8).
+            closed: If True, fit a closed periodic spline (loop). If False (default),
+                fit an open spline — tracking runs from s=0 to s=total_length.
         """
         super().__init__()
 
         self.speed = speed
+        self.closed = closed
         self._n_arc_samples = n_arc_samples
         self._orientation_modes = orientation_modes if orientation_modes else ['fixed']
         self._orientation_mode = self._orientation_modes[0]
@@ -58,8 +62,8 @@ class BSplinePath(Path):
         self._build_rmf_table()
 
     def _fit_spline(self, pts: np.ndarray):
-        """Fit closed periodic cubic B-spline to control points."""
-        self._tck, _ = splprep([pts[:, 0], pts[:, 1], pts[:, 2]], k=3, per=True, s=0)
+        """Fit cubic B-spline to control points (open or closed)."""
+        self._tck, _ = splprep([pts[:, 0], pts[:, 1], pts[:, 2]], k=3, per=self.closed, s=0)
 
     def _build_arc_length_table(self):
         """Precompute arc-length as a function of spline parameter u ∈ [0, 1].
@@ -85,7 +89,7 @@ class BSplinePath(Path):
 
         Same pattern as Figure8Path._s_to_t.
         """
-        s = float(s) % self.total_length
+        s = float(s) % self.total_length if self.closed else float(np.clip(s, 0.0, self.total_length))
         idx = int(np.searchsorted(self._s_table, s, side='right')) - 1
         idx = max(0, min(idx, len(self._s_table) - 2))
 
@@ -123,7 +127,7 @@ class BSplinePath(Path):
 
     def _rmf_at_s(self, s: float) -> np.ndarray:
         """Interpolate RMF orientation at arc-length s using SLERP."""
-        s = float(s) % self.total_length
+        s = float(s) % self.total_length if self.closed else float(np.clip(s, 0.0, self.total_length))
         idx = int(np.searchsorted(self._s_table, s, side='right')) - 1
         idx = max(0, min(idx, self._n_arc_samples - 2))
 
@@ -221,6 +225,7 @@ class BSplinePath(Path):
         n_arc_samples: int = 1000,
         max_retries: int = 20,
         orientation_modes: list = None,
+        closed: bool = False,
     ) -> 'BSplinePath':
         """Generate a random closed B-spline path.
 
@@ -252,7 +257,7 @@ class BSplinePath(Path):
                 center, workspace_radius, n_control_points, rng,
                 workspace_violation_prob, violation_magnitude
             )
-            path = cls(pts, speed, n_arc_samples, orientation_modes=orientation_modes)
+            path = cls(pts, speed, n_arc_samples, orientation_modes=orientation_modes, closed=closed)
             min_r = cls._min_curvature_radius(path)
 
             if min_r > min_curvature_radius:
