@@ -287,6 +287,16 @@ class EETrackingEnv(gym.Env):
 
         # Get initial observation
         state = self._get_robot_state()
+
+        # Warm-start prev_action with a P-control action for the initial error so
+        # CAPS doesn't start from a zero baseline. Without this, the policy learns
+        # a large startup transient relative to zero which causes ~100-step oscillation.
+        _target = self.path.position(self.s_current)
+        _err_ee = state.ee_rot_world.T @ (_target - state.ee_pos_world)
+        self.prev_action[:3] = np.clip(
+            0.1 * _err_ee / self.action_scale[:3], -1.0, 1.0
+        ).astype(np.float32)
+
         obs = self.obs_builder.build(
             state, self.path, self.s_current,
             include_orientation=self.include_orientation,
