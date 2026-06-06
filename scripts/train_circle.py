@@ -492,6 +492,14 @@ def evaluate(env, agent, obs_rms, num_episodes=5, eval_seed=None):
         jitter = compute_jitter_metrics(all_actions[0], env.dt)
         metrics.update({f'jitter_{k}': float(v) for k, v in jitter.items()})
 
+    # EE kinematic jerk (physical, from positions — averaged across all episodes)
+    if len(all_positions) > 0:
+        ee_jerk_rms_values = []
+        for positions in all_positions:
+            ej = compute_ee_jerk_metrics(np.array(positions), env.dt)
+            ee_jerk_rms_values.append(ej['rms_jerk'])
+        metrics['ee_jerk_rms'] = float(np.mean(ee_jerk_rms_values))
+
     # Tracking error metrics (from first episode)
     if len(all_positions) > 0 and len(all_targets) > 0:
         tracking = compute_tracking_error_metrics(
@@ -761,22 +769,23 @@ def train(config):
                     config, stage_params, agent, obs_rms,
                     num_episodes_per_path=max(2, config.training.num_eval_episodes // len(path_types))
                 )
-                # Print per-path breakdown
+                # Print per-path breakdown (pos + EE RMS jerk)
                 print(f"  Per-path metrics:")
                 for pt, pm in eval_metrics.get('per_path', {}).items():
-                    print(f"    {pt}: pos={pm['pos_error_mean']*1000:.2f}mm, ori={np.degrees(pm['ori_error_mean']):.2f}°")
+                    jerk_str = f"  jerk={pm['ee_jerk_rms']:.1f}" if 'ee_jerk_rms' in pm else ''
+                    print(f"    {pt}: pos={pm['pos_error_mean']*1000:.2f}mm  ori={np.degrees(pm['ori_error_mean']):.2f}°{jerk_str}")
             else:
                 # Single-path evaluation (original behavior)
                 eval_metrics = evaluate(env, agent, obs_rms, config.training.num_eval_episodes)
+                print(f"  Mean position error: {eval_metrics['tracking_mean_position_error']*1000:.2f} mm")
+                print(f"  Max position error: {eval_metrics['tracking_max_position_error']*1000:.2f} mm")
+                if eval_metrics.get('ori_error_mean', 0) > 0:
+                    print(f"  Mean orientation error: {np.degrees(eval_metrics['ori_error_mean']):.2f} deg")
 
             print(f"  Mean episode reward: {eval_metrics['mean_episode_reward']:.2f} ± {eval_metrics['std_episode_reward']:.2f}")
             print(f"  Mean episode length: {eval_metrics['mean_episode_length']:.1f}")
-            print(f"  Mean position error: {eval_metrics['tracking_mean_position_error']*1000:.2f} mm")
-            print(f"  Max position error: {eval_metrics['tracking_max_position_error']*1000:.2f} mm")
-            if eval_metrics.get('ori_error_mean', 0) > 0:
-                print(f"  Mean orientation error: {np.degrees(eval_metrics['ori_error_mean']):.2f} deg")
-            print(f"  Jitter (integrated squared jerk): {eval_metrics['jitter_integrated_squared_jerk']:.6f}")
-            print(f"  High-freq power ratio: {eval_metrics['jitter_high_freq_power_ratio']:.4f}")
+            if 'ee_jerk_rms' in eval_metrics:
+                print(f"  EE RMS jerk: {eval_metrics['ee_jerk_rms']:.1f} m/s³")
             print(f"  Reward components: r_pos={eval_metrics['mean_r_pos']:.3f}, r_ori={eval_metrics['mean_r_ori']:.3f}, r_vel={eval_metrics['mean_r_vel']:.3f}")
             print(f"  Penalties: action_rate={eval_metrics['mean_p_action_rate']:.2e}, joint_vel={eval_metrics['mean_p_joint_vel']:.2e}")
 

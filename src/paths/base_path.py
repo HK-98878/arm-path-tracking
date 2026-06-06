@@ -170,9 +170,11 @@ class Path(ABC):
         Note:
             Used in observation to give policy anticipation.
         """
+        closed = getattr(self, 'closed', True)
         points = []
         for k in range(1, n_points + 1):
-            s_k = (s + k * ds) % self.total_length
+            s_ahead = s + k * ds
+            s_k = (s_ahead % self.total_length) if closed else min(s_ahead, self.total_length)
             points.append(self.position(s_k))
 
         return np.array(points)

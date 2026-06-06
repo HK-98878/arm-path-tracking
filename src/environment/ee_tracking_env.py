@@ -206,17 +206,31 @@ class EETrackingEnv(gym.Env):
         """
         super().reset(seed=seed)
 
-        # Regenerate B-spline path each episode (fresh random shape)
+        # Regenerate B-spline path each episode (fresh random shape).
+        # For open paths, retry generation until IK to s=0 succeeds so the arm
+        # always starts at the path start rather than nominal (which could be
+        # 300mm+ away if the path start is on the far side of the workspace).
+        _cached_ik: Optional[np.ndarray] = None
         if self._bspline_config is not None:
             from ..paths.path_factory import create_bspline_path
-            self.path = create_bspline_path(
-                center=self._bspline_config['center'],
-                speed=self._bspline_config['speed'],
-                bspline_config=self._bspline_config,
-                rng=self.np_random,
-                min_curvature_radius_override=self._bspline_config.get('min_curvature_radius'),
-                orientation_modes=self._bspline_config.get('orientation_modes'),
-            )
+            _is_open_config = not self._bspline_config.get('closed', False)
+            _max_path_attempts = 5 if _is_open_config else 1
+            for _attempt in range(_max_path_attempts):
+                self.path = create_bspline_path(
+                    center=self._bspline_config['center'],
+                    speed=self._bspline_config['speed'],
+                    bspline_config=self._bspline_config,
+                    rng=self.np_random,
+                    min_curvature_radius_override=self._bspline_config.get('min_curvature_radius'),
+                    orientation_modes=self._bspline_config.get('orientation_modes'),
+                )
+                if _is_open_config:
+                    _cached_ik = self._solve_ik(
+                        self.path.position(0.0),
+                        self.path.orientation(0.0),
+                    )
+                    if _cached_ik is not None:
+                        break
 
         # Select orientation mode for this episode (if path supports it)
         if hasattr(self.path, 'reset_orientation_mode'):
@@ -238,7 +252,8 @@ class EETrackingEnv(gym.Env):
             noise_mag = self.np_random.uniform(0.0, self.start_position_noise)
             target_pos = p_on_path + noise_dir * noise_mag
             target_quat = self.path.orientation(s_phase)
-            result = self._solve_ik(target_pos, target_quat)
+            # Reuse cached IK result for open paths to avoid solving twice
+            result = _cached_ik if (path_is_open and _cached_ik is not None) else self._solve_ik(target_pos, target_quat)
             q_init = result if result is not None else self._Q_NOMINAL
         else:
             q_init = self._Q_NOMINAL
@@ -258,10 +273,11 @@ class EETrackingEnv(gym.Env):
         mujoco.mj_forward(self.model, self.data)
 
         # Find starting arc-length position.
-        # Open bspline paths always start at s=0 (IK already targeted path start).
-        # All other paths find the closest point on the path to the current EE position.
+        # Open bspline paths start at s=0 when IK succeeded; fall back to
+        # closest-point scan if all path regeneration attempts failed (arm at nominal).
+        # All other paths find the closest point to the current EE position.
         ee_pos = self.data.xpos[self.ee_body_id]
-        if path_is_open:
+        if path_is_open and result is not None:
             self.s_current = 0.0
         else:
             s_samples = np.linspace(0, self.path.total_length, 100)
@@ -530,7 +546,9 @@ class EETrackingEnv(gym.Env):
         # Advance ideal position at constant path speed (unwrapped)
         # Use signed speed for direction, magnitude for rate
         s_ideal_wrapped = self.s_ideal % self.path.total_length
-        speed_magnitude = np.linalg.norm(self.path.velocity(s_ideal_wrapped))
+        _path_closed = getattr(self.path, 'closed', True)
+        s_ideal_for_vel = s_ideal_wrapped if _path_closed else min(self.s_ideal, self.path.total_length)
+        speed_magnitude = np.linalg.norm(self.path.velocity(s_ideal_for_vel))
         if is_reversed:
             self.s_ideal = self.s_ideal - speed_magnitude * self.dt
         else:
