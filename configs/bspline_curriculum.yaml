@@ -159,6 +159,7 @@ curriculum:
       lookahead_noise_std: 0.0
       advance_threshold: 0.08
       max_steps: 300000
+      min_steps_in_stage: 150000
 
     # Stage 1: circle + figure-8 — identical to multipath_deeper (Run 58)
     - speed: 0.10
@@ -173,6 +174,7 @@ curriculum:
       lookahead_noise_std: 0.0
       advance_threshold: 0.06
       max_steps: 400000
+      min_steps_in_stage: 200000
 
     # Stage 2: introduce bspline gently at SAME speed as stage 1
     #   - Speed unchanged (0.10): don't simultaneously increase speed and add new path type
@@ -237,7 +239,7 @@ curriculum:
       advance_threshold: null
       max_steps: 2000000
 
-  consecutive_evals: 1
+  consecutive_evals: 3
   warmup_after_transition: 10000
   lr_warmup_multiplier: 2.0
   ent_warmup_multiplier: 2.0

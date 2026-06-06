@@ -68,6 +68,11 @@ class CurriculumManager:
         stage = self.stages[self.current_stage]
         threshold = stage.get('advance_threshold')
         max_steps = stage.get('max_steps')  # None means no step-count fallback
+        min_steps = stage.get('min_steps_in_stage', 0)
+
+        # Never advance before the minimum step floor regardless of performance.
+        if self.steps_in_stage < min_steps:
+            return False
 
         # All active path types must independently meet the threshold for
         # consecutive_evals in a row.
