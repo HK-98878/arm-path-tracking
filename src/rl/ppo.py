@@ -67,13 +67,12 @@ class PPO:
             self.actor_critic = LSTMActorCritic(
                 obs_dim, action_dim, lstm_hidden_size
             ).to(device)
-            self.actor_hidden, self.critic_hidden = self.actor_critic.init_hidden(device=device)
+            self.actor_hidden = self.actor_critic.init_hidden(device=device)
         else:
             self.actor_critic = ActorCritic(
                 obs_dim, action_dim, hidden_sizes
             ).to(device)
             self.actor_hidden = None
-            self.critic_hidden = None
 
         # Optimizer
         self.optimizer = optim.Adam(
@@ -109,9 +108,9 @@ class PPO:
         self.num_timesteps = 0
 
     def reset_hidden_state(self):
-        """Reset LSTM hidden states to zero (call at episode boundaries)."""
+        """Reset LSTM actor hidden state to zero (call at episode boundaries)."""
         if self.is_lstm:
-            self.actor_hidden, self.critic_hidden = self.actor_critic.init_hidden(device=self.device)
+            self.actor_hidden = self.actor_critic.init_hidden(device=self.device)
 
     def select_action(
         self,
@@ -130,9 +129,9 @@ class PPO:
         with torch.no_grad():
             obs_tensor = torch.from_numpy(obs).float().unsqueeze(0).to(self.device)
             if self.is_lstm:
-                action, log_prob, _, value, self.actor_hidden, self.critic_hidden = \
+                action, log_prob, _, value, self.actor_hidden = \
                     self.actor_critic.get_action_and_value(
-                        obs_tensor, self.actor_hidden, self.critic_hidden, deterministic
+                        obs_tensor, self.actor_hidden, deterministic
                     )
             else:
                 action, log_prob, _, value = self.actor_critic.get_action_and_value(
@@ -165,13 +164,11 @@ class PPO:
             done: Done flag
         """
         if self.is_lstm:
-            # Store hidden states that were active when this obs was processed
+            # Store actor hidden state active when this obs was processed
             ah = self.actor_hidden[0].squeeze().cpu().numpy()   # (H,)
             ac = self.actor_hidden[1].squeeze().cpu().numpy()
-            ch = self.critic_hidden[0].squeeze().cpu().numpy()
-            cc = self.critic_hidden[1].squeeze().cpu().numpy()
             self.buffer.add(obs, action, reward, value, log_prob, done,
-                            actor_h=ah, actor_c=ac, critic_h=ch, critic_c=cc)
+                            actor_h=ah, actor_c=ac)
         else:
             self.buffer.add(obs, action, reward, value, log_prob, done)
 
@@ -193,7 +190,7 @@ class PPO:
         with torch.no_grad():
             last_obs_tensor = torch.from_numpy(last_obs).float().unsqueeze(0).to(self.device)
             if self.is_lstm:
-                last_value = self.actor_critic.get_value(last_obs_tensor, self.critic_hidden).cpu().item()
+                last_value = self.actor_critic.get_value(last_obs_tensor).cpu().item()
             else:
                 last_value = self.actor_critic.get_value(last_obs_tensor).cpu().item()
 
@@ -229,15 +226,12 @@ class PPO:
                         returns_batch,
                         actor_h_batch,
                         actor_c_batch,
-                        critic_h_batch,
-                        critic_c_batch,
                     ) = batch
                     next_obs_batch = None
                     valid_temporal_mask = None
                     new_log_probs, entropy, new_values = self.actor_critic.evaluate_actions(
                         obs_batch, actions_batch,
                         actor_h_batch, actor_c_batch,
-                        critic_h_batch, critic_c_batch,
                     )
                 elif include_next_obs:
                     (

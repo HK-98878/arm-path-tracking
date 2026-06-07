@@ -371,34 +371,34 @@ class LSTMCritic(nn.Module):
 
 
 class LSTMActorCritic(nn.Module):
-    """Actor-critic wrapper with separate LSTM actor and LSTM critic."""
+    """Hybrid: LSTM actor + MLP critic.
+
+    Only the actor carries temporal memory. The MLP critic uses the observation
+    directly — position error, velocity, and lookahead already capture state value
+    well enough, and keeping the critic stateless avoids stale hidden-state
+    contamination of GAE advantage estimates.
+    """
 
     def __init__(self, obs_dim: int, action_dim: int, lstm_hidden_size: int = 256):
         super().__init__()
         self.actor = LSTMActor(obs_dim, action_dim, lstm_hidden_size)
-        self.critic = LSTMCritic(obs_dim, lstm_hidden_size)
+        self.critic = Critic(obs_dim)   # MLP — no hidden state
         self.lstm_hidden_size = lstm_hidden_size
 
-    def init_hidden(
-        self, batch_size: int = 1, device=None
-    ) -> Tuple[_HiddenState, _HiddenState]:
-        """Returns (actor_hidden, critic_hidden)."""
-        return (
-            self.actor.init_hidden(batch_size, device),
-            self.critic.init_hidden(batch_size, device),
-        )
+    def init_hidden(self, batch_size: int = 1, device=None) -> _HiddenState:
+        """Returns actor (h, c) — only the actor has hidden state."""
+        return self.actor.init_hidden(batch_size, device)
 
     def get_action_and_value(
         self,
         obs: torch.Tensor,
         actor_hidden: Optional[_HiddenState],
-        critic_hidden: Optional[_HiddenState],
         deterministic: bool = False
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, _HiddenState, _HiddenState]:
-        """Inference step. Returns (action, log_prob, entropy, value, new_actor_h, new_critic_h)."""
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, _HiddenState]:
+        """Inference step. Returns (action, log_prob, entropy, value, new_actor_hidden)."""
         action, log_prob, entropy, new_actor_h = self.actor.get_action(obs, actor_hidden, deterministic)
-        value, new_critic_h = self.critic.forward(obs, critic_hidden)
-        return action, log_prob, entropy, value, new_actor_h, new_critic_h
+        value = self.critic(obs)
+        return action, log_prob, entropy, value, new_actor_h
 
     def evaluate_actions(
         self,
@@ -406,17 +406,12 @@ class LSTMActorCritic(nn.Module):
         actions: torch.Tensor,
         actor_h: torch.Tensor,
         actor_c: torch.Tensor,
-        critic_h: torch.Tensor,
-        critic_c: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Training step with stored hidden states. Returns (log_probs, entropy, values)."""
+        """Training step. Returns (log_probs, entropy, values)."""
         log_prob, entropy = self.actor.evaluate_actions(obs, actions, actor_h, actor_c)
-        value = self.critic.evaluate(obs, critic_h, critic_c)
+        value = self.critic(obs)
         return log_prob, entropy, value
 
-    def get_value(
-        self, obs: torch.Tensor, critic_hidden: Optional[_HiddenState] = None
-    ) -> torch.Tensor:
+    def get_value(self, obs: torch.Tensor, _hidden=None) -> torch.Tensor:
         """Value estimate for GAE bootstrap. Returns (B,) tensor."""
-        value, _ = self.critic.forward(obs, critic_hidden)
-        return value
+        return self.critic(obs)

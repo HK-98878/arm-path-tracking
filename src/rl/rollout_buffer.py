@@ -49,12 +49,10 @@ class RolloutBuffer:
         self.advantages = np.zeros(buffer_size, dtype=np.float32)
         self.returns = np.zeros(buffer_size, dtype=np.float32)
 
-        # LSTM hidden state storage (only allocated when lstm_hidden_size > 0)
+        # LSTM hidden state storage — actor only (critic is MLP, no hidden state)
         if lstm_hidden_size > 0:
             self.actor_hidden_h = np.zeros((buffer_size, lstm_hidden_size), dtype=np.float32)
             self.actor_hidden_c = np.zeros((buffer_size, lstm_hidden_size), dtype=np.float32)
-            self.critic_hidden_h = np.zeros((buffer_size, lstm_hidden_size), dtype=np.float32)
-            self.critic_hidden_c = np.zeros((buffer_size, lstm_hidden_size), dtype=np.float32)
 
         self.pos = 0
         self.full = False
@@ -69,8 +67,6 @@ class RolloutBuffer:
         done: bool,
         actor_h: np.ndarray = None,
         actor_c: np.ndarray = None,
-        critic_h: np.ndarray = None,
-        critic_c: np.ndarray = None,
     ):
         """Add transition to buffer.
 
@@ -82,7 +78,6 @@ class RolloutBuffer:
             log_prob: Log probability of action
             done: Episode done flag
             actor_h, actor_c: LSTM actor hidden state (H,) — only used when lstm_hidden_size > 0
-            critic_h, critic_c: LSTM critic hidden state (H,) — only used when lstm_hidden_size > 0
         """
         self.observations[self.pos] = obs
         self.actions[self.pos] = action
@@ -94,8 +89,6 @@ class RolloutBuffer:
         if self.lstm_hidden_size > 0 and actor_h is not None:
             self.actor_hidden_h[self.pos] = actor_h
             self.actor_hidden_c[self.pos] = actor_c
-            self.critic_hidden_h[self.pos] = critic_h
-            self.critic_hidden_c[self.pos] = critic_c
 
         self.pos += 1
         if self.pos == self.buffer_size:
@@ -206,8 +199,6 @@ class RolloutBuffer:
                 batch = batch + (
                     torch.from_numpy(self.actor_hidden_h[batch_indices]).to(self.device),
                     torch.from_numpy(self.actor_hidden_c[batch_indices]).to(self.device),
-                    torch.from_numpy(self.critic_hidden_h[batch_indices]).to(self.device),
-                    torch.from_numpy(self.critic_hidden_c[batch_indices]).to(self.device),
                 )
 
             yield batch
@@ -219,8 +210,6 @@ class RolloutBuffer:
         if self.lstm_hidden_size > 0:
             self.actor_hidden_h[:] = 0
             self.actor_hidden_c[:] = 0
-            self.critic_hidden_h[:] = 0
-            self.critic_hidden_c[:] = 0
 
     def size(self) -> int:
         """Get current buffer size."""
