@@ -207,6 +207,10 @@ class RolloutBuffer:
         self,
         seq_len: int,
         batch_size_sequences: int,
+        seq_actor_h: np.ndarray = None,
+        seq_actor_c: np.ndarray = None,
+        seq_critic_h: np.ndarray = None,
+        seq_critic_c: np.ndarray = None,
     ) -> Generator[Tuple[torch.Tensor, ...], None, None]:
         """Yield (B, T, ...) sequence batches for TBTT training.
 
@@ -215,9 +219,14 @@ class RolloutBuffer:
         sequence are signalled by the done flag; the network resets hidden state
         at those points during the forward pass.
 
+        If seq_actor_h/c and seq_critic_h/c are provided (shape (n_seqs, H)),
+        they are yielded as per-sequence initial hidden states so the LSTM starts
+        from the actual rollout context rather than zeros.
+
         Yields:
-            obs (B,T,obs_dim), actions (B,T,act_dim), dones (B,T),
-            old_values (B,T), old_log_probs (B,T), advantages (B,T), returns (B,T)
+            obs, actions, dones, old_values, old_log_probs, advantages, returns
+            — each (B, T, ...) — plus optionally actor_h0, actor_c0, critic_h0,
+            critic_c0 each (B, H) when seq hidden arrays are provided.
         """
         size = self.buffer_size if self.full else self.pos
         n_seqs = size // seq_len
@@ -229,6 +238,8 @@ class RolloutBuffer:
 
         seq_idx = np.arange(n_seqs)
         np.random.shuffle(seq_idx)
+
+        has_hidden = seq_actor_h is not None
 
         def _slice(arr, i):
             return arr[i * seq_len:(i + 1) * seq_len]
@@ -246,7 +257,7 @@ class RolloutBuffer:
             adv_b = np.stack([_slice(advantages, i) for i in batch_idx])
             ret_b = np.stack([_slice(self.returns, i) for i in batch_idx])
 
-            yield (
+            batch = (
                 torch.from_numpy(obs_b).float().to(self.device),
                 torch.from_numpy(act_b).float().to(self.device),
                 torch.from_numpy(don_b).float().to(self.device),
@@ -255,6 +266,16 @@ class RolloutBuffer:
                 torch.from_numpy(adv_b).float().to(self.device),
                 torch.from_numpy(ret_b).float().to(self.device),
             )
+
+            if has_hidden:
+                batch = batch + (
+                    torch.from_numpy(seq_actor_h[batch_idx]).float().to(self.device),
+                    torch.from_numpy(seq_actor_c[batch_idx]).float().to(self.device),
+                    torch.from_numpy(seq_critic_h[batch_idx]).float().to(self.device),
+                    torch.from_numpy(seq_critic_c[batch_idx]).float().to(self.device),
+                )
+
+            yield batch
 
     def reset(self):
         """Reset buffer."""

@@ -334,9 +334,10 @@ class LSTMActor(nn.Module):
         obs_seq: torch.Tensor,
         actions_seq: torch.Tensor,
         dones_seq: torch.Tensor,
+        h0: Optional[_HiddenState] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """TBTT training path. Returns log_probs (B, T) and entropy (B, T)."""
-        features, _ = self.forward_sequence(obs_seq, dones_seq)
+        features, _ = self.forward_sequence(obs_seq, dones_seq, h0=h0)
         B, T, H = features.shape
         features_flat = features.reshape(B * T, H)
         actions_flat = actions_seq.reshape(B * T, self.action_dim)
@@ -420,9 +421,10 @@ class LSTMCritic(nn.Module):
         self,
         obs_seq: torch.Tensor,
         dones_seq: torch.Tensor,
+        h0: Optional[_HiddenState] = None,
     ) -> torch.Tensor:
         """TBTT training path. Returns values (B, T)."""
-        features, _ = self.forward_sequence(obs_seq, dones_seq)
+        features, _ = self.forward_sequence(obs_seq, dones_seq, h0=h0)
         B, T, H = features.shape
         return self.value(features.reshape(B * T, H)).squeeze(-1).view(B, T)
 
@@ -462,10 +464,12 @@ class LSTMActorCritic(nn.Module):
         obs_seq: torch.Tensor,
         actions_seq: torch.Tensor,
         dones_seq: torch.Tensor,
+        actor_h0: Optional[_HiddenState] = None,
+        critic_h0: Optional[_HiddenState] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """TBTT training. Returns (log_probs (B,T), entropy (B,T), values (B,T))."""
-        log_probs, entropy = self.actor.evaluate_sequence(obs_seq, actions_seq, dones_seq)
-        values = self.critic.evaluate_sequence(obs_seq, dones_seq)
+        log_probs, entropy = self.actor.evaluate_sequence(obs_seq, actions_seq, dones_seq, h0=actor_h0)
+        values = self.critic.evaluate_sequence(obs_seq, dones_seq, h0=critic_h0)
         return log_probs, entropy, values
 
     def get_value(

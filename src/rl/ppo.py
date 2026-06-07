@@ -49,6 +49,12 @@ class PPO:
                 obs_dim, action_dim, lstm_hidden_size
             ).to(device)
             self.actor_hidden, self.critic_hidden = self.actor_critic.init_hidden(device=device)
+            # Sequence-boundary hidden states for TBTT: one entry per 16-step chunk
+            n_seqs = n_steps // seq_len
+            self._seq_actor_h = np.zeros((n_seqs, lstm_hidden_size), dtype=np.float32)
+            self._seq_actor_c = np.zeros((n_seqs, lstm_hidden_size), dtype=np.float32)
+            self._seq_critic_h = np.zeros((n_seqs, lstm_hidden_size), dtype=np.float32)
+            self._seq_critic_c = np.zeros((n_seqs, lstm_hidden_size), dtype=np.float32)
         else:
             self.actor_critic = ActorCritic(
                 obs_dim, action_dim, hidden_sizes
@@ -111,6 +117,16 @@ class PPO:
         with torch.no_grad():
             obs_tensor = torch.from_numpy(obs).float().unsqueeze(0).to(self.device)
             if self.is_lstm:
+                # Snapshot h at sequence boundaries BEFORE updating hidden state.
+                # buffer.pos is where this transition will land; if it's a sequence
+                # start, record the hidden state that will initialise that sequence.
+                buf_pos = self.buffer.pos
+                if buf_pos % self.seq_len == 0:
+                    seq_idx = buf_pos // self.seq_len
+                    self._seq_actor_h[seq_idx] = self.actor_hidden[0].squeeze().cpu().numpy()
+                    self._seq_actor_c[seq_idx] = self.actor_hidden[1].squeeze().cpu().numpy()
+                    self._seq_critic_h[seq_idx] = self.critic_hidden[0].squeeze().cpu().numpy()
+                    self._seq_critic_c[seq_idx] = self.critic_hidden[1].squeeze().cpu().numpy()
                 action, log_prob, _, value, self.actor_hidden, self.critic_hidden = \
                     self.actor_critic.get_action_and_value(
                         obs_tensor, self.actor_hidden, self.critic_hidden, deterministic
@@ -192,14 +208,26 @@ class PPO:
             batch_size_seq = max(1, self.batch_size // seq_len)
 
             for _epoch in range(self.n_epochs):
-                for batch in self.buffer.get_sequences(seq_len, batch_size_seq):
-                    obs_seq, actions_seq, dones_seq, old_values_seq, \
-                        old_log_probs_seq, adv_seq, returns_seq = batch
+                for batch in self.buffer.get_sequences(
+                    seq_len, batch_size_seq,
+                    self._seq_actor_h, self._seq_actor_c,
+                    self._seq_critic_h, self._seq_critic_c,
+                ):
+                    (obs_seq, actions_seq, dones_seq, old_values_seq,
+                     old_log_probs_seq, adv_seq, returns_seq,
+                     ah0_b, ac0_b, ch0_b, cc0_b) = batch
                     B, T = obs_seq.shape[:2]
 
+                    # Reconstruct (h, c) tuples in (1, B, H) format for LSTM
+                    actor_h0 = (ah0_b.unsqueeze(0), ac0_b.unsqueeze(0))
+                    critic_h0 = (ch0_b.unsqueeze(0), cc0_b.unsqueeze(0))
+
                     # Forward through sequences — gradients flow through T LSTM steps
+                    # h0 from rollout gives correct starting context (not zeros)
                     new_log_probs_seq, entropy_seq, new_values_seq = \
-                        self.actor_critic.evaluate_sequence(obs_seq, actions_seq, dones_seq)
+                        self.actor_critic.evaluate_sequence(
+                            obs_seq, actions_seq, dones_seq, actor_h0, critic_h0
+                        )
 
                     # Flatten (B, T) → (B*T,) for scalar PPO losses
                     new_log_probs = new_log_probs_seq.reshape(-1)
