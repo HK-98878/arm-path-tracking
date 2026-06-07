@@ -36,6 +36,7 @@ class PPO:
         network_type: str = "mlp",
         lstm_hidden_size: int = 256,
         seq_len: int = 16,
+        target_kl: Optional[float] = None,
         device: str = "cpu",
         caps_config: Optional[dict] = None
     ):
@@ -86,6 +87,7 @@ class PPO:
         # Hyperparameters
         self.clip_epsilon = clip_epsilon
         self.n_epochs = n_epochs
+        self.target_kl = target_kl
         self.batch_size = batch_size
         self.ent_coef = ent_coef
         self.vf_coef = vf_coef
@@ -288,6 +290,12 @@ class PPO:
                     metrics['clip_fraction'] += clip_frac.item()
                     n_batches += 1
 
+                    if self.target_kl is not None and approx_kl.item() > self.target_kl:
+                        break  # stop this epoch early
+
+                if self.target_kl is not None and approx_kl.item() > self.target_kl:
+                    break  # stop epoch loop
+
         else:
             # MLP path — unchanged shuffled-batch training
             include_next_obs = (
@@ -363,6 +371,12 @@ class PPO:
                     metrics['approx_kl'] += approx_kl.item()
                     metrics['clip_fraction'] += clip_frac.item()
                     n_batches += 1
+
+                    if self.target_kl is not None and approx_kl.item() > self.target_kl:
+                        break
+
+                if self.target_kl is not None and approx_kl.item() > self.target_kl:
+                    break
 
         for key in metrics:
             metrics[key] /= max(1, n_batches)

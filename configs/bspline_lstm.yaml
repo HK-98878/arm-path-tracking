@@ -86,6 +86,7 @@ ppo:
   network_type: lstm
   lstm_hidden_size: 256
   seq_len: 16
+  target_kl: 0.01
 
 # CAPS: temporal disabled (LSTM handles temporal smoothness), spatial retained
 caps:
