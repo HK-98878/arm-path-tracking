@@ -173,6 +173,20 @@ curriculum:
       advance_threshold: 0.06
       max_steps: null
 
+    - speed: 0.15
+      sig_pos: 0.05
+      sig_ori: 0.16
+      w_ori: 0.9
+      orientation_modes: ['fixed']
+      path_types: ['circle', 'figure8', 'bspline']
+      path_weights: [0.40, 0.25, 0.35]
+      obs_noise_pos_std: 0.0
+      obs_noise_vel_std: 0.0
+      lookahead_noise_std: 0.0
+      min_curvature_radius: 0.09
+      advance_threshold: 0.04
+      max_steps: null
+
     - speed: 0.20
       sig_pos: 0.03
       sig_ori: 0.12
