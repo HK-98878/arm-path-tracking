@@ -256,6 +256,7 @@ def make_env(config, bidirectional=False, include_orientation=False, path_type='
         render_mode=None,  # Headless
         dls_config=config.control.dls.to_dict() if hasattr(config.control, 'dls') else None,
         include_orientation=include_orientation,
+        lookahead_n=getattr(config.env, 'lookahead_n', 5),
         lookahead_ds=getattr(config.env, 'lookahead_ds', 0.02),
         randomize_start_position=getattr(config.env, 'randomize_start_position', False),
         start_position_noise=getattr(config.env, 'start_position_noise', 0.06),
@@ -360,6 +361,7 @@ def make_env_with_stage(config, stage_params, bidirectional=False, path_type_ove
         render_mode=None,  # Headless
         dls_config=config.control.dls.to_dict() if hasattr(config.control, 'dls') else None,
         include_orientation=include_orientation,
+        lookahead_n=getattr(config.env, 'lookahead_n', 5),
         lookahead_ds=getattr(config.env, 'lookahead_ds', 0.02),
         randomize_start_position=getattr(config.env, 'randomize_start_position', False),
         start_position_noise=getattr(config.env, 'start_position_noise', 0.06),

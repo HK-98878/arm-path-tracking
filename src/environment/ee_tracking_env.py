@@ -43,6 +43,7 @@ class EETrackingEnv(gym.Env):
         render_mode: Optional[str] = None,
         dls_config: Optional[dict] = None,
         include_orientation: bool = False,
+        lookahead_n: int = 5,
         lookahead_ds: float = 0.02,
         randomize_start_position: bool = False,
         start_position_noise: float = 0.06,
@@ -114,6 +115,7 @@ class EETrackingEnv(gym.Env):
         self.obs_builder = ObservationBuilder(
             n_joints=self.n_joints,
             joint_limits=(self.q_min, self.q_max),
+            lookahead_n=lookahead_n,
             lookahead_ds=lookahead_ds,
             include_ee_accel=include_ee_accel,
             obs_noise_config=obs_noise_config,
