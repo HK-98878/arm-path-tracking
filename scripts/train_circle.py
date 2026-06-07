@@ -413,6 +413,7 @@ def evaluate(env, agent, obs_rms, num_episodes=5, eval_seed=None):
 
     for i in range(num_episodes):
         obs, _ = env.reset(seed=eval_seed if i == 0 else None)
+        agent.reset_hidden_state()
         obs = obs_rms.normalize(obs)  # Normalize observation
         done = False
         episode_reward = 0
@@ -655,7 +656,9 @@ def train(config):
         ent_coef=config.ppo.ent_coef,
         vf_coef=config.ppo.vf_coef,
         max_grad_norm=config.ppo.max_grad_norm,
-        hidden_sizes=tuple(config.ppo.hidden_sizes),
+        hidden_sizes=tuple(getattr(config.ppo, 'hidden_sizes', [256, 256])),
+        network_type=getattr(config.ppo, 'network_type', 'mlp'),
+        lstm_hidden_size=getattr(config.ppo, 'lstm_hidden_size', 256),
         device=device,
         caps_config=config.caps.to_dict() if hasattr(config, 'caps') else None
     )
@@ -739,6 +742,7 @@ def train(config):
         if done:
             num_episodes += 1
             obs, _ = env.reset()
+            agent.reset_hidden_state()
             obs_rms.update(obs)
             obs = obs_rms.normalize(obs)
             episode_reward = 0
@@ -862,6 +866,7 @@ def train(config):
 
                 # Reset observation
                 obs, _ = env.reset()
+                agent.reset_hidden_state()
                 obs_rms.update(obs)
                 obs = obs_rms.normalize(obs)
 

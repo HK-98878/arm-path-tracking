@@ -10,7 +10,7 @@ import torch.optim as optim
 from typing import Optional, Dict
 import os
 
-from .networks import ActorCritic
+from .networks import ActorCritic, LSTMActorCritic
 from .rollout_buffer import RolloutBuffer
 from .caps_loss import CAPSLoss
 
@@ -33,6 +33,8 @@ class PPO:
         vf_coef: float = 0.5,
         max_grad_norm: float = 0.5,
         hidden_sizes: tuple = (256, 256),
+        network_type: str = "mlp",
+        lstm_hidden_size: int = 256,
         device: str = "cpu",
         caps_config: Optional[dict] = None
     ):
@@ -51,16 +53,27 @@ class PPO:
             ent_coef: Entropy coefficient
             vf_coef: Value function coefficient
             max_grad_norm: Max gradient norm for clipping
-            hidden_sizes: Network hidden sizes
+            hidden_sizes: MLP hidden sizes (ignored when network_type='lstm')
+            network_type: 'mlp' or 'lstm'
+            lstm_hidden_size: LSTM hidden units (used when network_type='lstm')
             device: Device (cpu or cuda)
             caps_config: Optional CAPS configuration
         """
         self.device = device
+        self.is_lstm = network_type == "lstm"
 
         # Network
-        self.actor_critic = ActorCritic(
-            obs_dim, action_dim, hidden_sizes
-        ).to(device)
+        if self.is_lstm:
+            self.actor_critic = LSTMActorCritic(
+                obs_dim, action_dim, lstm_hidden_size
+            ).to(device)
+            self.actor_hidden, self.critic_hidden = self.actor_critic.init_hidden(device=device)
+        else:
+            self.actor_critic = ActorCritic(
+                obs_dim, action_dim, hidden_sizes
+            ).to(device)
+            self.actor_hidden = None
+            self.critic_hidden = None
 
         # Optimizer
         self.optimizer = optim.Adam(
@@ -75,7 +88,8 @@ class PPO:
             action_dim=action_dim,
             gamma=gamma,
             gae_lambda=gae_lambda,
-            device=device
+            device=device,
+            lstm_hidden_size=lstm_hidden_size if self.is_lstm else 0,
         )
 
         # CAPS loss
@@ -94,6 +108,11 @@ class PPO:
         # Training stats
         self.num_timesteps = 0
 
+    def reset_hidden_state(self):
+        """Reset LSTM hidden states to zero (call at episode boundaries)."""
+        if self.is_lstm:
+            self.actor_hidden, self.critic_hidden = self.actor_critic.init_hidden(device=self.device)
+
     def select_action(
         self,
         obs: np.ndarray,
@@ -110,9 +129,15 @@ class PPO:
         """
         with torch.no_grad():
             obs_tensor = torch.from_numpy(obs).float().unsqueeze(0).to(self.device)
-            action, log_prob, _, value = self.actor_critic.get_action_and_value(
-                obs_tensor, deterministic
-            )
+            if self.is_lstm:
+                action, log_prob, _, value, self.actor_hidden, self.critic_hidden = \
+                    self.actor_critic.get_action_and_value(
+                        obs_tensor, self.actor_hidden, self.critic_hidden, deterministic
+                    )
+            else:
+                action, log_prob, _, value = self.actor_critic.get_action_and_value(
+                    obs_tensor, deterministic
+                )
 
         return (
             action.cpu().numpy()[0],
@@ -139,7 +164,16 @@ class PPO:
             log_prob: Log probability
             done: Done flag
         """
-        self.buffer.add(obs, action, reward, value, log_prob, done)
+        if self.is_lstm:
+            # Store hidden states that were active when this obs was processed
+            ah = self.actor_hidden[0].squeeze().cpu().numpy()   # (H,)
+            ac = self.actor_hidden[1].squeeze().cpu().numpy()
+            ch = self.critic_hidden[0].squeeze().cpu().numpy()
+            cc = self.critic_hidden[1].squeeze().cpu().numpy()
+            self.buffer.add(obs, action, reward, value, log_prob, done,
+                            actor_h=ah, actor_c=ac, critic_h=ch, critic_c=cc)
+        else:
+            self.buffer.add(obs, action, reward, value, log_prob, done)
 
     def update(
         self,
@@ -158,7 +192,10 @@ class PPO:
         # Compute last value for GAE
         with torch.no_grad():
             last_obs_tensor = torch.from_numpy(last_obs).float().unsqueeze(0).to(self.device)
-            last_value = self.actor_critic.get_value(last_obs_tensor).cpu().item()
+            if self.is_lstm:
+                last_value = self.actor_critic.get_value(last_obs_tensor, self.critic_hidden).cpu().item()
+            else:
+                last_value = self.actor_critic.get_value(last_obs_tensor).cpu().item()
 
         # Compute returns and advantages
         self.buffer.compute_returns_and_advantages(last_value, last_done)
@@ -174,10 +211,35 @@ class PPO:
         }
 
         # Multiple epochs of optimization
-        include_next_obs = self.caps_loss.enabled and self.caps_loss.lambda_temporal > 0
+        # Temporal CAPS requires consecutive obs; disabled for LSTM (handled by hidden state)
+        include_next_obs = (
+            not self.is_lstm
+            and self.caps_loss.enabled
+            and self.caps_loss.lambda_temporal > 0
+        )
         for epoch in range(self.n_epochs):
             for batch in self.buffer.get(self.batch_size, include_next_obs=include_next_obs):
-                if include_next_obs:
+                if self.is_lstm:
+                    (
+                        obs_batch,
+                        actions_batch,
+                        old_values_batch,
+                        old_log_probs_batch,
+                        advantages_batch,
+                        returns_batch,
+                        actor_h_batch,
+                        actor_c_batch,
+                        critic_h_batch,
+                        critic_c_batch,
+                    ) = batch
+                    next_obs_batch = None
+                    valid_temporal_mask = None
+                    new_log_probs, entropy, new_values = self.actor_critic.evaluate_actions(
+                        obs_batch, actions_batch,
+                        actor_h_batch, actor_c_batch,
+                        critic_h_batch, critic_c_batch,
+                    )
+                elif include_next_obs:
                     (
                         obs_batch,
                         actions_batch,
@@ -186,8 +248,10 @@ class PPO:
                         advantages_batch,
                         returns_batch,
                         next_obs_batch,
-                        valid_temporal_mask
+                        valid_temporal_mask,
                     ) = batch
+                    new_log_probs, entropy, new_values = \
+                        self.actor_critic.evaluate_actions(obs_batch, actions_batch)
                 else:
                     (
                         obs_batch,
@@ -195,14 +259,12 @@ class PPO:
                         old_values_batch,
                         old_log_probs_batch,
                         advantages_batch,
-                        returns_batch
+                        returns_batch,
                     ) = batch
                     next_obs_batch = None
                     valid_temporal_mask = None
-
-                # Evaluate actions
-                new_log_probs, entropy, new_values = \
-                    self.actor_critic.evaluate_actions(obs_batch, actions_batch)
+                    new_log_probs, entropy, new_values = \
+                        self.actor_critic.evaluate_actions(obs_batch, actions_batch)
 
                 # Policy loss (PPO clip objective)
                 ratio = torch.exp(new_log_probs - old_log_probs_batch)
@@ -291,7 +353,9 @@ class PPO:
         checkpoint = {
             'actor_critic': self.actor_critic.state_dict(),
             'optimizer': self.optimizer.state_dict(),
-            'num_timesteps': self.num_timesteps
+            'num_timesteps': self.num_timesteps,
+            'network_type': 'lstm' if self.is_lstm else 'mlp',
+            'lstm_hidden_size': self.buffer.lstm_hidden_size,
         }
 
         if obs_rms is not None:

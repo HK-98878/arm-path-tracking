@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from torch.distributions import Normal
 import numpy as np
-from typing import Tuple
+from typing import Optional, Tuple
 
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
@@ -232,3 +232,191 @@ class ActorCritic(nn.Module):
         log_prob, entropy = self.actor.evaluate_actions(obs, actions)
         value = self.critic(obs)
         return log_prob, entropy, value
+
+
+# ---------------------------------------------------------------------------
+# LSTM Actor-Critic (separate actor and critic LSTMs)
+# ---------------------------------------------------------------------------
+
+_HiddenState = Tuple[torch.Tensor, torch.Tensor]  # (h, c) each (1, B, H)
+
+
+class LSTMActor(nn.Module):
+    """LSTM-based policy network. Maintains no internal state — callers pass (h, c)."""
+
+    def __init__(self, obs_dim: int, action_dim: int, lstm_hidden_size: int = 256):
+        super().__init__()
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
+        self.lstm_hidden_size = lstm_hidden_size
+
+        self.input_proj = layer_init(nn.Linear(obs_dim, 128))
+        self.lstm = nn.LSTM(128, lstm_hidden_size, num_layers=1, batch_first=True)
+        self.mean = layer_init(nn.Linear(lstm_hidden_size, action_dim), std=0.01)
+        self.log_std = nn.Parameter(torch.full((action_dim,), -1.0))
+
+    def init_hidden(self, batch_size: int = 1, device=None) -> _HiddenState:
+        h = torch.zeros(1, batch_size, self.lstm_hidden_size)
+        c = torch.zeros(1, batch_size, self.lstm_hidden_size)
+        if device is not None:
+            h, c = h.to(device), c.to(device)
+        return h, c
+
+    def _features(
+        self, obs: torch.Tensor, hidden: Optional[_HiddenState]
+    ) -> Tuple[torch.Tensor, _HiddenState]:
+        # obs: (B, obs_dim) → project → (B, 1, 128) → LSTM → (B, H)
+        x = torch.relu(self.input_proj(obs)).unsqueeze(1)
+        if hidden is None:
+            lstm_out, new_hidden = self.lstm(x)
+        else:
+            lstm_out, new_hidden = self.lstm(x, hidden)
+        return lstm_out.squeeze(1), new_hidden
+
+    def get_action(
+        self,
+        obs: torch.Tensor,
+        hidden: Optional[_HiddenState] = None,
+        deterministic: bool = False
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, _HiddenState]:
+        """Sample action. Returns (action, log_prob, entropy, new_hidden)."""
+        features, new_hidden = self._features(obs, hidden)
+        mean = self.mean(features)
+        std = torch.exp(self.log_std)
+        dist = Normal(mean, std)
+        entropy = dist.entropy().sum(dim=-1)
+
+        x = mean if deterministic else dist.sample()
+        action = torch.tanh(x)
+        log_prob = dist.log_prob(x).sum(dim=-1)
+        log_prob = log_prob - torch.sum(torch.log(1 - action.pow(2) + 1e-6), dim=-1)
+
+        return action, log_prob, entropy, new_hidden
+
+    def evaluate_actions(
+        self,
+        obs: torch.Tensor,
+        actions: torch.Tensor,
+        hidden_h: torch.Tensor,
+        hidden_c: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Re-evaluate log_prob and entropy for stored actions (PPO update).
+
+        Args:
+            hidden_h, hidden_c: (B, H) stored per-sample hidden states from buffer.
+        """
+        h0 = hidden_h.unsqueeze(0)  # (1, B, H)
+        c0 = hidden_c.unsqueeze(0)
+        features, _ = self._features(obs, (h0, c0))
+        mean = self.mean(features)
+        std = torch.exp(self.log_std)
+        dist = Normal(mean, std)
+        entropy = dist.entropy().sum(dim=-1)
+
+        actions_clamped = torch.clamp(actions, -0.9999, 0.9999)
+        x = torch.atanh(actions_clamped)
+        log_prob = dist.log_prob(x).sum(dim=-1)
+        log_prob = log_prob - torch.sum(torch.log(1 - actions.pow(2) + 1e-6), dim=-1)
+
+        return log_prob, entropy
+
+
+class LSTMCritic(nn.Module):
+    """LSTM-based value network. Independent from LSTMActor."""
+
+    def __init__(self, obs_dim: int, lstm_hidden_size: int = 256):
+        super().__init__()
+        self.obs_dim = obs_dim
+        self.lstm_hidden_size = lstm_hidden_size
+
+        self.input_proj = layer_init(nn.Linear(obs_dim, 128))
+        self.lstm = nn.LSTM(128, lstm_hidden_size, num_layers=1, batch_first=True)
+        self.value = layer_init(nn.Linear(lstm_hidden_size, 1), std=1.0)
+
+    def init_hidden(self, batch_size: int = 1, device=None) -> _HiddenState:
+        h = torch.zeros(1, batch_size, self.lstm_hidden_size)
+        c = torch.zeros(1, batch_size, self.lstm_hidden_size)
+        if device is not None:
+            h, c = h.to(device), c.to(device)
+        return h, c
+
+    def _features(
+        self, obs: torch.Tensor, hidden: Optional[_HiddenState]
+    ) -> Tuple[torch.Tensor, _HiddenState]:
+        x = torch.relu(self.input_proj(obs)).unsqueeze(1)
+        if hidden is None:
+            lstm_out, new_hidden = self.lstm(x)
+        else:
+            lstm_out, new_hidden = self.lstm(x, hidden)
+        return lstm_out.squeeze(1), new_hidden
+
+    def forward(
+        self, obs: torch.Tensor, hidden: Optional[_HiddenState] = None
+    ) -> Tuple[torch.Tensor, _HiddenState]:
+        """Inference forward. Returns (value (B,), new_hidden)."""
+        features, new_hidden = self._features(obs, hidden)
+        return self.value(features).squeeze(-1), new_hidden
+
+    def evaluate(
+        self,
+        obs: torch.Tensor,
+        hidden_h: torch.Tensor,
+        hidden_c: torch.Tensor
+    ) -> torch.Tensor:
+        """Training forward using stored per-sample hidden states. Returns values (B,)."""
+        h0 = hidden_h.unsqueeze(0)
+        c0 = hidden_c.unsqueeze(0)
+        features, _ = self._features(obs, (h0, c0))
+        return self.value(features).squeeze(-1)
+
+
+class LSTMActorCritic(nn.Module):
+    """Actor-critic wrapper with separate LSTM actor and LSTM critic."""
+
+    def __init__(self, obs_dim: int, action_dim: int, lstm_hidden_size: int = 256):
+        super().__init__()
+        self.actor = LSTMActor(obs_dim, action_dim, lstm_hidden_size)
+        self.critic = LSTMCritic(obs_dim, lstm_hidden_size)
+        self.lstm_hidden_size = lstm_hidden_size
+
+    def init_hidden(
+        self, batch_size: int = 1, device=None
+    ) -> Tuple[_HiddenState, _HiddenState]:
+        """Returns (actor_hidden, critic_hidden)."""
+        return (
+            self.actor.init_hidden(batch_size, device),
+            self.critic.init_hidden(batch_size, device),
+        )
+
+    def get_action_and_value(
+        self,
+        obs: torch.Tensor,
+        actor_hidden: Optional[_HiddenState],
+        critic_hidden: Optional[_HiddenState],
+        deterministic: bool = False
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, _HiddenState, _HiddenState]:
+        """Inference step. Returns (action, log_prob, entropy, value, new_actor_h, new_critic_h)."""
+        action, log_prob, entropy, new_actor_h = self.actor.get_action(obs, actor_hidden, deterministic)
+        value, new_critic_h = self.critic.forward(obs, critic_hidden)
+        return action, log_prob, entropy, value, new_actor_h, new_critic_h
+
+    def evaluate_actions(
+        self,
+        obs: torch.Tensor,
+        actions: torch.Tensor,
+        actor_h: torch.Tensor,
+        actor_c: torch.Tensor,
+        critic_h: torch.Tensor,
+        critic_c: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Training step with stored hidden states. Returns (log_probs, entropy, values)."""
+        log_prob, entropy = self.actor.evaluate_actions(obs, actions, actor_h, actor_c)
+        value = self.critic.evaluate(obs, critic_h, critic_c)
+        return log_prob, entropy, value
+
+    def get_value(
+        self, obs: torch.Tensor, critic_hidden: Optional[_HiddenState] = None
+    ) -> torch.Tensor:
+        """Value estimate for GAE bootstrap. Returns (B,) tensor."""
+        value, _ = self.critic.forward(obs, critic_hidden)
+        return value

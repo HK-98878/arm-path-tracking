@@ -210,6 +210,7 @@ def run_episode(env, agent, obs_rms, video_recorder=None,
         episode_data: Dict if episode_recorder provided, else None
     """
     obs, _ = env.reset()
+    agent.reset_hidden_state()
     obs = obs_rms.normalize(obs)
     done = False
 

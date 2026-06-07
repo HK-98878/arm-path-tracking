@@ -15,7 +15,8 @@ class RolloutBuffer:
         action_dim: int,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
-        device: str = "cpu"
+        device: str = "cpu",
+        lstm_hidden_size: int = 0
     ):
         """Initialize rollout buffer.
 
@@ -26,6 +27,7 @@ class RolloutBuffer:
             gamma: Discount factor
             gae_lambda: GAE lambda parameter
             device: Device for tensors
+            lstm_hidden_size: Hidden size for LSTM (0 = MLP mode, no hidden storage)
         """
         self.buffer_size = buffer_size
         self.obs_dim = obs_dim
@@ -33,6 +35,7 @@ class RolloutBuffer:
         self.gamma = gamma
         self.gae_lambda = gae_lambda
         self.device = device
+        self.lstm_hidden_size = lstm_hidden_size
 
         # Storage
         self.observations = np.zeros((buffer_size, obs_dim), dtype=np.float32)
@@ -46,6 +49,13 @@ class RolloutBuffer:
         self.advantages = np.zeros(buffer_size, dtype=np.float32)
         self.returns = np.zeros(buffer_size, dtype=np.float32)
 
+        # LSTM hidden state storage (only allocated when lstm_hidden_size > 0)
+        if lstm_hidden_size > 0:
+            self.actor_hidden_h = np.zeros((buffer_size, lstm_hidden_size), dtype=np.float32)
+            self.actor_hidden_c = np.zeros((buffer_size, lstm_hidden_size), dtype=np.float32)
+            self.critic_hidden_h = np.zeros((buffer_size, lstm_hidden_size), dtype=np.float32)
+            self.critic_hidden_c = np.zeros((buffer_size, lstm_hidden_size), dtype=np.float32)
+
         self.pos = 0
         self.full = False
 
@@ -56,7 +66,11 @@ class RolloutBuffer:
         reward: float,
         value: float,
         log_prob: float,
-        done: bool
+        done: bool,
+        actor_h: np.ndarray = None,
+        actor_c: np.ndarray = None,
+        critic_h: np.ndarray = None,
+        critic_c: np.ndarray = None,
     ):
         """Add transition to buffer.
 
@@ -67,6 +81,8 @@ class RolloutBuffer:
             value: Value estimate
             log_prob: Log probability of action
             done: Episode done flag
+            actor_h, actor_c: LSTM actor hidden state (H,) — only used when lstm_hidden_size > 0
+            critic_h, critic_c: LSTM critic hidden state (H,) — only used when lstm_hidden_size > 0
         """
         self.observations[self.pos] = obs
         self.actions[self.pos] = action
@@ -74,6 +90,12 @@ class RolloutBuffer:
         self.values[self.pos] = value
         self.log_probs[self.pos] = log_prob
         self.dones[self.pos] = done
+
+        if self.lstm_hidden_size > 0 and actor_h is not None:
+            self.actor_hidden_h[self.pos] = actor_h
+            self.actor_hidden_c[self.pos] = actor_c
+            self.critic_hidden_h[self.pos] = critic_h
+            self.critic_hidden_c[self.pos] = critic_c
 
         self.pos += 1
         if self.pos == self.buffer_size:
@@ -180,12 +202,25 @@ class RolloutBuffer:
                     torch.from_numpy(valid_temporal[batch_indices]).to(self.device),
                 )
 
+            if self.lstm_hidden_size > 0:
+                batch = batch + (
+                    torch.from_numpy(self.actor_hidden_h[batch_indices]).to(self.device),
+                    torch.from_numpy(self.actor_hidden_c[batch_indices]).to(self.device),
+                    torch.from_numpy(self.critic_hidden_h[batch_indices]).to(self.device),
+                    torch.from_numpy(self.critic_hidden_c[batch_indices]).to(self.device),
+                )
+
             yield batch
 
     def reset(self):
         """Reset buffer."""
         self.pos = 0
         self.full = False
+        if self.lstm_hidden_size > 0:
+            self.actor_hidden_h[:] = 0
+            self.actor_hidden_c[:] = 0
+            self.critic_hidden_h[:] = 0
+            self.critic_hidden_c[:] = 0
 
     def size(self) -> int:
         """Get current buffer size."""

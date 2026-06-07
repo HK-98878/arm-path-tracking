@@ -1,0 +1,191 @@
+# LSTM policy curriculum — same 5-stage structure as bspline_curriculum.yaml (Run 73 baseline).
+# Changes vs bspline_curriculum.yaml:
+#   - network_type: lstm, lstm_hidden_size: 256 (separate actor and critic LSTMs)
+#   - lambda_temporal: 0 (LSTM handles temporal smoothness; any increase collapsed MLP)
+#   - hidden_sizes retained for reference but unused when network_type=lstm
+
+# Environment
+env:
+  model_path: "src/models/mujoco_menagerie/franka_emika_panda/panda_nohand.xml"
+  dt: 0.01  # 100 Hz control
+  max_episode_steps: 1000
+  ee_body_name: "attachment"
+  lookahead_n: 8
+  lookahead_ds: 0.04
+  randomize_start_position: true
+  start_position_noise: 0.06
+  include_ee_accel: false
+
+# Path (base config; curriculum stages override speed and path_types)
+path:
+  type: circle
+  radius: 0.15
+  center: [0.32, 0.0, 0.52]
+  speed: 0.1
+  orientation_modes: ['fixed']
+  rock_amplitude: 0.175
+  n_oscillations: 2
+
+# B-spline path generation parameters
+bspline_path:
+  closed: false
+  workspace_radius: 0.17
+  n_control_points: 7
+  n_arc_samples: 1000
+  workspace_violation_prob: 0.15
+  violation_magnitude: 0.04
+
+# Control
+control:
+  action_scale: [0.01, 0.01, 0.01, 0.03, 0.03, 0.03]
+  dls:
+    k_limit: 0.5
+    lambda_min: 0.0001
+    lambda_max: 0.1
+    manip_threshold: 0.05
+    separate_lin_ang_damping: true
+    manip_threshold_linear: 0.025
+    manip_threshold_angular: 3.0
+
+# Reward
+reward:
+  w_pos: 1.0
+  w_ori: 1.0
+  w_vel: 0.5
+  w_action_rate: 0.05
+  w_joint_vel: 0.001
+  w_ee_jerk: 0.1
+  ee_jerk_scale: 1000.0
+  w_vel_match: 0.0
+  sig_pos: 0.15
+  sig_ori: 0.50
+  sig_vel: 0.15
+  pos_linear_fallback_max: 0.5
+  ori_linear_fallback_max: 3.14
+  vel_gate_max: 0.15
+  vel_reward_type: arc_length
+  vel_match_gate_max: 0.05
+
+# PPO
+ppo:
+  learning_rate: 0.00003
+  lr_min: 0.000005
+  lr_decay: linear
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  n_steps: 2048
+  n_epochs: 4
+  batch_size: 64
+  ent_coef: 0.01
+  ent_coef_min: 0.001
+  ent_decay: linear
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  hidden_sizes: [256, 256, 256]  # unused; kept for config compatibility
+  network_type: lstm
+  lstm_hidden_size: 256
+
+# CAPS: temporal disabled (LSTM handles temporal smoothness), spatial retained
+caps:
+  enabled: true
+  lambda_temporal: 0.0
+  lambda_spatial: 0.1
+  spatial_noise_std: 0.01
+
+# Training
+training:
+  total_timesteps: 3000000
+  eval_frequency: 10000
+  save_frequency: 50000
+  log_frequency: 1000
+  num_eval_episodes: 5
+  normalization_warmup: 10000
+  bidirectional: true
+
+# Logging
+logging:
+  output_dir: "outputs/bspline_curriculum"
+  tensorboard: true
+  save_video: false
+
+seed: 42
+
+# Curriculum: identical 5-stage structure to Run 73 (best stable MLP run)
+curriculum:
+  enabled: true
+  stages:
+    - speed: 0.05
+      sig_pos: 0.15
+      sig_ori: 0.50
+      w_ori: 0.3
+      orientation_modes: ['fixed']
+      path_types: ['circle']
+      path_weights: [1.0]
+      obs_noise_pos_std: 0.0
+      obs_noise_vel_std: 0.0
+      lookahead_noise_std: 0.0
+      advance_threshold: 0.08
+      max_steps: 300000
+      min_steps_in_stage: 150000
+
+    - speed: 0.10
+      sig_pos: 0.10
+      sig_ori: 0.25
+      w_ori: 0.5
+      orientation_modes: ['fixed']
+      path_types: ['circle', 'figure8']
+      path_weights: [0.7, 0.3]
+      obs_noise_pos_std: 0.0
+      obs_noise_vel_std: 0.0
+      lookahead_noise_std: 0.0
+      advance_threshold: 0.06
+      max_steps: 400000
+      min_steps_in_stage: 200000
+
+    - speed: 0.10
+      sig_pos: 0.10
+      sig_ori: 0.25
+      w_ori: 0.6
+      orientation_modes: ['fixed']
+      path_types: ['circle', 'figure8', 'bspline']
+      path_weights: [0.55, 0.30, 0.15]
+      obs_noise_pos_std: 0.0
+      obs_noise_vel_std: 0.0
+      lookahead_noise_std: 0.0
+      min_curvature_radius: 0.12
+      advance_threshold: 0.07
+      max_steps: null
+
+    - speed: 0.15
+      sig_pos: 0.06
+      sig_ori: 0.20
+      w_ori: 0.8
+      orientation_modes: ['fixed']
+      path_types: ['circle', 'figure8', 'bspline']
+      path_weights: [0.45, 0.25, 0.30]
+      obs_noise_pos_std: 0.0
+      obs_noise_vel_std: 0.0
+      lookahead_noise_std: 0.0
+      min_curvature_radius: 0.09
+      advance_threshold: 0.06
+      max_steps: null
+
+    - speed: 0.20
+      sig_pos: 0.03
+      sig_ori: 0.12
+      w_ori: 1.0
+      orientation_modes: ['fixed']
+      path_types: ['circle', 'figure8', 'bspline']
+      path_weights: [0.25, 0.25, 0.50]
+      obs_noise_pos_std: 0.003
+      obs_noise_vel_std: 0.005
+      lookahead_noise_std: 0.004
+      min_curvature_radius: 0.07
+      advance_threshold: null
+      max_steps: 2000000
+
+  consecutive_evals: 3
+  warmup_after_transition: 10000
+  lr_warmup_multiplier: 2.0
+  ent_warmup_multiplier: 2.0

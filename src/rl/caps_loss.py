@@ -63,9 +63,9 @@ class CAPSLoss:
 
         # Get actions for consecutive states
         with torch.no_grad():
-            action_t, _, _ = actor.get_action(obs_t, deterministic=True)
+            action_t = actor.get_action(obs_t, deterministic=True)[0]
 
-        action_t_next, _, _ = actor.get_action(obs_t_next, deterministic=True)
+        action_t_next = actor.get_action(obs_t_next, deterministic=True)[0]
 
         # L2 difference per sample
         action_diff = action_t_next - action_t
@@ -108,10 +108,10 @@ class CAPSLoss:
         obs_perturbed = obs + noise
 
         # Get actions for original and perturbed states
-        action_original, _, _ = actor.get_action(obs, deterministic=True)
+        action_original = actor.get_action(obs, deterministic=True)[0]
 
         with torch.no_grad():
-            action_perturbed, _, _ = actor.get_action(obs_perturbed, deterministic=True)
+            action_perturbed = actor.get_action(obs_perturbed, deterministic=True)[0]
 
         # L2 difference
         action_diff = action_original - action_perturbed
