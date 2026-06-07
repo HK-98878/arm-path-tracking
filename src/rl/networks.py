@@ -293,32 +293,65 @@ class LSTMActor(nn.Module):
 
         return action, log_prob, entropy, new_hidden
 
-    def evaluate_actions(
+    def forward_sequence(
         self,
-        obs: torch.Tensor,
-        actions: torch.Tensor,
-        hidden_h: torch.Tensor,
-        hidden_c: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Re-evaluate log_prob and entropy for stored actions (PPO update).
+        obs_seq: torch.Tensor,
+        dones_seq: torch.Tensor,
+        h0: Optional[_HiddenState] = None,
+    ) -> Tuple[torch.Tensor, _HiddenState]:
+        """Run LSTM through a sequence, resetting hidden state at episode boundaries.
 
         Args:
-            hidden_h, hidden_c: (B, H) stored per-sample hidden states from buffer.
+            obs_seq:   (B, T, obs_dim)
+            dones_seq: (B, T) — done[b,t]=1 means episode ended at step t,
+                       so hidden is zeroed before step t+1
+            h0:        initial hidden state or None (zeros)
+
+        Returns:
+            features: (B, T, H), final_hidden: (h, c)
         """
-        h0 = hidden_h.unsqueeze(0)  # (1, B, H)
-        c0 = hidden_c.unsqueeze(0)
-        features, _ = self._features(obs, (h0, c0))
-        mean = self.mean(features)
+        B, T, _ = obs_seq.shape
+        if h0 is None:
+            h = torch.zeros(1, B, self.lstm_hidden_size, device=obs_seq.device)
+            c = torch.zeros(1, B, self.lstm_hidden_size, device=obs_seq.device)
+        else:
+            h, c = h0
+
+        features_list = []
+        for t in range(T):
+            if t > 0:
+                mask = (1.0 - dones_seq[:, t - 1]).view(1, B, 1)
+                h = h * mask
+                c = c * mask
+            x = torch.relu(self.input_proj(obs_seq[:, t])).unsqueeze(1)  # (B, 1, 128)
+            lstm_out, (h, c) = self.lstm(x, (h, c))
+            features_list.append(lstm_out.squeeze(1))  # (B, H)
+
+        return torch.stack(features_list, dim=1), (h, c)  # (B, T, H)
+
+    def evaluate_sequence(
+        self,
+        obs_seq: torch.Tensor,
+        actions_seq: torch.Tensor,
+        dones_seq: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """TBTT training path. Returns log_probs (B, T) and entropy (B, T)."""
+        features, _ = self.forward_sequence(obs_seq, dones_seq)
+        B, T, H = features.shape
+        features_flat = features.reshape(B * T, H)
+        actions_flat = actions_seq.reshape(B * T, self.action_dim)
+
+        mean = self.mean(features_flat)
         std = torch.exp(self.log_std)
         dist = Normal(mean, std)
         entropy = dist.entropy().sum(dim=-1)
 
-        actions_clamped = torch.clamp(actions, -0.9999, 0.9999)
+        actions_clamped = torch.clamp(actions_flat, -0.9999, 0.9999)
         x = torch.atanh(actions_clamped)
         log_prob = dist.log_prob(x).sum(dim=-1)
-        log_prob = log_prob - torch.sum(torch.log(1 - actions.pow(2) + 1e-6), dim=-1)
+        log_prob = log_prob - torch.sum(torch.log(1 - actions_flat.pow(2) + 1e-6), dim=-1)
 
-        return log_prob, entropy
+        return log_prob.view(B, T), entropy.view(B, T)
 
 
 class LSTMCritic(nn.Module):
@@ -357,61 +390,87 @@ class LSTMCritic(nn.Module):
         features, new_hidden = self._features(obs, hidden)
         return self.value(features).squeeze(-1), new_hidden
 
-    def evaluate(
+    def forward_sequence(
         self,
-        obs: torch.Tensor,
-        hidden_h: torch.Tensor,
-        hidden_c: torch.Tensor
+        obs_seq: torch.Tensor,
+        dones_seq: torch.Tensor,
+        h0: Optional[_HiddenState] = None,
+    ) -> Tuple[torch.Tensor, _HiddenState]:
+        """(B, T, obs_dim) → features (B, T, H). Resets hidden at episode boundaries."""
+        B, T, _ = obs_seq.shape
+        if h0 is None:
+            h = torch.zeros(1, B, self.lstm_hidden_size, device=obs_seq.device)
+            c = torch.zeros(1, B, self.lstm_hidden_size, device=obs_seq.device)
+        else:
+            h, c = h0
+
+        features_list = []
+        for t in range(T):
+            if t > 0:
+                mask = (1.0 - dones_seq[:, t - 1]).view(1, B, 1)
+                h = h * mask
+                c = c * mask
+            x = torch.relu(self.input_proj(obs_seq[:, t])).unsqueeze(1)
+            lstm_out, (h, c) = self.lstm(x, (h, c))
+            features_list.append(lstm_out.squeeze(1))
+
+        return torch.stack(features_list, dim=1), (h, c)
+
+    def evaluate_sequence(
+        self,
+        obs_seq: torch.Tensor,
+        dones_seq: torch.Tensor,
     ) -> torch.Tensor:
-        """Training forward using stored per-sample hidden states. Returns values (B,)."""
-        h0 = hidden_h.unsqueeze(0)
-        c0 = hidden_c.unsqueeze(0)
-        features, _ = self._features(obs, (h0, c0))
-        return self.value(features).squeeze(-1)
+        """TBTT training path. Returns values (B, T)."""
+        features, _ = self.forward_sequence(obs_seq, dones_seq)
+        B, T, H = features.shape
+        return self.value(features.reshape(B * T, H)).squeeze(-1).view(B, T)
 
 
 class LSTMActorCritic(nn.Module):
-    """Hybrid: LSTM actor + MLP critic.
-
-    Only the actor carries temporal memory. The MLP critic uses the observation
-    directly — position error, velocity, and lookahead already capture state value
-    well enough, and keeping the critic stateless avoids stale hidden-state
-    contamination of GAE advantage estimates.
-    """
+    """Full LSTM actor + LSTM critic with TBTT sequence training."""
 
     def __init__(self, obs_dim: int, action_dim: int, lstm_hidden_size: int = 256):
         super().__init__()
         self.actor = LSTMActor(obs_dim, action_dim, lstm_hidden_size)
-        self.critic = Critic(obs_dim)   # MLP — no hidden state
+        self.critic = LSTMCritic(obs_dim, lstm_hidden_size)
         self.lstm_hidden_size = lstm_hidden_size
 
-    def init_hidden(self, batch_size: int = 1, device=None) -> _HiddenState:
-        """Returns actor (h, c) — only the actor has hidden state."""
-        return self.actor.init_hidden(batch_size, device)
+    def init_hidden(
+        self, batch_size: int = 1, device=None
+    ) -> Tuple[_HiddenState, _HiddenState]:
+        """Returns (actor_hidden, critic_hidden) — each is (h, c)."""
+        return (
+            self.actor.init_hidden(batch_size, device),
+            self.critic.init_hidden(batch_size, device),
+        )
 
     def get_action_and_value(
         self,
         obs: torch.Tensor,
         actor_hidden: Optional[_HiddenState],
-        deterministic: bool = False
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, _HiddenState]:
-        """Inference step. Returns (action, log_prob, entropy, value, new_actor_hidden)."""
+        critic_hidden: Optional[_HiddenState],
+        deterministic: bool = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, _HiddenState, _HiddenState]:
+        """Inference step (single obs). Returns (action, log_prob, entropy, value, new_actor_h, new_critic_h)."""
         action, log_prob, entropy, new_actor_h = self.actor.get_action(obs, actor_hidden, deterministic)
-        value = self.critic(obs)
-        return action, log_prob, entropy, value, new_actor_h
+        value, new_critic_h = self.critic.forward(obs, critic_hidden)
+        return action, log_prob, entropy, value, new_actor_h, new_critic_h
 
-    def evaluate_actions(
+    def evaluate_sequence(
         self,
-        obs: torch.Tensor,
-        actions: torch.Tensor,
-        actor_h: torch.Tensor,
-        actor_c: torch.Tensor,
+        obs_seq: torch.Tensor,
+        actions_seq: torch.Tensor,
+        dones_seq: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Training step. Returns (log_probs, entropy, values)."""
-        log_prob, entropy = self.actor.evaluate_actions(obs, actions, actor_h, actor_c)
-        value = self.critic(obs)
-        return log_prob, entropy, value
+        """TBTT training. Returns (log_probs (B,T), entropy (B,T), values (B,T))."""
+        log_probs, entropy = self.actor.evaluate_sequence(obs_seq, actions_seq, dones_seq)
+        values = self.critic.evaluate_sequence(obs_seq, dones_seq)
+        return log_probs, entropy, values
 
-    def get_value(self, obs: torch.Tensor, _hidden=None) -> torch.Tensor:
+    def get_value(
+        self, obs: torch.Tensor, critic_hidden: Optional[_HiddenState] = None
+    ) -> torch.Tensor:
         """Value estimate for GAE bootstrap. Returns (B,) tensor."""
-        return self.critic(obs)
+        value, _ = self.critic.forward(obs, critic_hidden)
+        return value

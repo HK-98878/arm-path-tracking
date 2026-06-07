@@ -659,6 +659,7 @@ def train(config):
         hidden_sizes=tuple(getattr(config.ppo, 'hidden_sizes', [256, 256])),
         network_type=getattr(config.ppo, 'network_type', 'mlp'),
         lstm_hidden_size=getattr(config.ppo, 'lstm_hidden_size', 256),
+        seq_len=getattr(config.ppo, 'seq_len', 16),
         device=device,
         caps_config=config.caps.to_dict() if hasattr(config, 'caps') else None
     )

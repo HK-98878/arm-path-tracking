@@ -85,6 +85,7 @@ ppo:
   hidden_sizes: [256, 256, 256]  # unused; kept for config compatibility
   network_type: lstm
   lstm_hidden_size: 256
+  seq_len: 16
 
 # CAPS: temporal disabled (LSTM handles temporal smoothness), spatial retained
 caps:

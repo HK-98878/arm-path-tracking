@@ -35,44 +35,26 @@ class PPO:
         hidden_sizes: tuple = (256, 256),
         network_type: str = "mlp",
         lstm_hidden_size: int = 256,
+        seq_len: int = 16,
         device: str = "cpu",
         caps_config: Optional[dict] = None
     ):
-        """Initialize PPO agent.
-
-        Args:
-            obs_dim: Observation dimension
-            action_dim: Action dimension
-            learning_rate: Learning rate
-            gamma: Discount factor
-            gae_lambda: GAE lambda
-            clip_epsilon: PPO clip epsilon
-            n_steps: Steps to collect before update
-            n_epochs: Optimization epochs per update
-            batch_size: Minibatch size
-            ent_coef: Entropy coefficient
-            vf_coef: Value function coefficient
-            max_grad_norm: Max gradient norm for clipping
-            hidden_sizes: MLP hidden sizes (ignored when network_type='lstm')
-            network_type: 'mlp' or 'lstm'
-            lstm_hidden_size: LSTM hidden units (used when network_type='lstm')
-            device: Device (cpu or cuda)
-            caps_config: Optional CAPS configuration
-        """
         self.device = device
         self.is_lstm = network_type == "lstm"
+        self.seq_len = seq_len
 
         # Network
         if self.is_lstm:
             self.actor_critic = LSTMActorCritic(
                 obs_dim, action_dim, lstm_hidden_size
             ).to(device)
-            self.actor_hidden = self.actor_critic.init_hidden(device=device)
+            self.actor_hidden, self.critic_hidden = self.actor_critic.init_hidden(device=device)
         else:
             self.actor_critic = ActorCritic(
                 obs_dim, action_dim, hidden_sizes
             ).to(device)
             self.actor_hidden = None
+            self.critic_hidden = None
 
         # Optimizer
         self.optimizer = optim.Adam(
@@ -80,7 +62,7 @@ class PPO:
             lr=learning_rate
         )
 
-        # Rollout buffer
+        # Rollout buffer — TBTT does not store hidden states in buffer
         self.buffer = RolloutBuffer(
             buffer_size=n_steps,
             obs_dim=obs_dim,
@@ -88,7 +70,7 @@ class PPO:
             gamma=gamma,
             gae_lambda=gae_lambda,
             device=device,
-            lstm_hidden_size=lstm_hidden_size if self.is_lstm else 0,
+            lstm_hidden_size=0,
         )
 
         # CAPS loss
@@ -108,9 +90,9 @@ class PPO:
         self.num_timesteps = 0
 
     def reset_hidden_state(self):
-        """Reset LSTM actor hidden state to zero (call at episode boundaries)."""
+        """Reset LSTM hidden states to zero (call at episode boundaries)."""
         if self.is_lstm:
-            self.actor_hidden = self.actor_critic.init_hidden(device=self.device)
+            self.actor_hidden, self.critic_hidden = self.actor_critic.init_hidden(device=self.device)
 
     def select_action(
         self,
@@ -129,9 +111,9 @@ class PPO:
         with torch.no_grad():
             obs_tensor = torch.from_numpy(obs).float().unsqueeze(0).to(self.device)
             if self.is_lstm:
-                action, log_prob, _, value, self.actor_hidden = \
+                action, log_prob, _, value, self.actor_hidden, self.critic_hidden = \
                     self.actor_critic.get_action_and_value(
-                        obs_tensor, self.actor_hidden, deterministic
+                        obs_tensor, self.actor_hidden, self.critic_hidden, deterministic
                     )
             else:
                 action, log_prob, _, value = self.actor_critic.get_action_and_value(
@@ -163,14 +145,7 @@ class PPO:
             log_prob: Log probability
             done: Done flag
         """
-        if self.is_lstm:
-            # Store actor hidden state active when this obs was processed
-            ah = self.actor_hidden[0].squeeze().cpu().numpy()   # (H,)
-            ac = self.actor_hidden[1].squeeze().cpu().numpy()
-            self.buffer.add(obs, action, reward, value, log_prob, done,
-                            actor_h=ah, actor_c=ac)
-        else:
-            self.buffer.add(obs, action, reward, value, log_prob, done)
+        self.buffer.add(obs, action, reward, value, log_prob, done)
 
     def update(
         self,
@@ -190,7 +165,9 @@ class PPO:
         with torch.no_grad():
             last_obs_tensor = torch.from_numpy(last_obs).float().unsqueeze(0).to(self.device)
             if self.is_lstm:
-                last_value = self.actor_critic.get_value(last_obs_tensor).cpu().item()
+                last_value = self.actor_critic.get_value(
+                    last_obs_tensor, self.critic_hidden
+                ).cpu().item()
             else:
                 last_value = self.actor_critic.get_value(last_obs_tensor).cpu().item()
 
@@ -206,128 +183,161 @@ class PPO:
             'approx_kl': 0.0,
             'clip_fraction': 0.0,
         }
+        n_batches = 0
 
-        # Multiple epochs of optimization
-        # Temporal CAPS requires consecutive obs; disabled for LSTM (handled by hidden state)
-        include_next_obs = (
-            not self.is_lstm
-            and self.caps_loss.enabled
-            and self.caps_loss.lambda_temporal > 0
-        )
-        for epoch in range(self.n_epochs):
-            for batch in self.buffer.get(self.batch_size, include_next_obs=include_next_obs):
-                if self.is_lstm:
-                    (
-                        obs_batch,
-                        actions_batch,
-                        old_values_batch,
-                        old_log_probs_batch,
-                        advantages_batch,
-                        returns_batch,
-                        actor_h_batch,
-                        actor_c_batch,
-                    ) = batch
-                    next_obs_batch = None
-                    valid_temporal_mask = None
-                    new_log_probs, entropy, new_values = self.actor_critic.evaluate_actions(
-                        obs_batch, actions_batch,
-                        actor_h_batch, actor_c_batch,
+        if self.is_lstm:
+            # TBTT: recompute hidden states from scratch over seq_len-step sequences.
+            # No stored hidden needed — buffer just yields raw (obs, actions, dones, ...) sequences.
+            seq_len = self.seq_len
+            batch_size_seq = max(1, self.batch_size // seq_len)
+
+            for _epoch in range(self.n_epochs):
+                for batch in self.buffer.get_sequences(seq_len, batch_size_seq):
+                    obs_seq, actions_seq, dones_seq, old_values_seq, \
+                        old_log_probs_seq, adv_seq, returns_seq = batch
+                    B, T = obs_seq.shape[:2]
+
+                    # Forward through sequences — gradients flow through T LSTM steps
+                    new_log_probs_seq, entropy_seq, new_values_seq = \
+                        self.actor_critic.evaluate_sequence(obs_seq, actions_seq, dones_seq)
+
+                    # Flatten (B, T) → (B*T,) for scalar PPO losses
+                    new_log_probs = new_log_probs_seq.reshape(-1)
+                    entropy = entropy_seq.reshape(-1)
+                    new_values = new_values_seq.reshape(-1)
+                    old_log_probs = old_log_probs_seq.reshape(-1)
+                    old_values = old_values_seq.reshape(-1)
+                    advantages = adv_seq.reshape(-1)
+                    returns = returns_seq.reshape(-1)
+
+                    ratio = torch.exp(new_log_probs - old_log_probs)
+                    surr1 = ratio * advantages
+                    surr2 = torch.clamp(
+                        ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon
+                    ) * advantages
+                    policy_loss = -torch.min(surr1, surr2).mean()
+
+                    value_pred_clipped = old_values + torch.clamp(
+                        new_values - old_values, -self.clip_epsilon, self.clip_epsilon
                     )
-                elif include_next_obs:
-                    (
-                        obs_batch,
-                        actions_batch,
-                        old_values_batch,
-                        old_log_probs_batch,
-                        advantages_batch,
-                        returns_batch,
-                        next_obs_batch,
-                        valid_temporal_mask,
-                    ) = batch
+                    value_loss = 0.5 * torch.max(
+                        (new_values - returns) ** 2,
+                        (value_pred_clipped - returns) ** 2
+                    ).mean()
+
+                    entropy_loss = -entropy.mean()
+
+                    caps_loss = torch.tensor(0.0, device=self.device)
+                    if self.caps_loss.enabled:
+                        obs_flat = obs_seq.reshape(B * T, -1)
+                        caps_dict = self.caps_loss.compute(
+                            self.actor_critic.actor,
+                            obs_spatial=obs_flat,
+                        )
+                        caps_loss = caps_dict['caps_loss']
+
+                    loss = (
+                        policy_loss
+                        + self.vf_coef * value_loss
+                        + self.ent_coef * entropy_loss
+                        + caps_loss
+                    )
+
+                    self.optimizer.zero_grad()
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+                    self.optimizer.step()
+
+                    with torch.no_grad():
+                        approx_kl = ((ratio - 1) - ratio.log()).mean()
+                        clip_frac = ((ratio - 1.0).abs() > self.clip_epsilon).float().mean()
+
+                    metrics['policy_loss'] += policy_loss.item()
+                    metrics['value_loss'] += value_loss.item()
+                    metrics['entropy_loss'] += entropy_loss.item()
+                    metrics['caps_loss'] += caps_loss.item()
+                    metrics['approx_kl'] += approx_kl.item()
+                    metrics['clip_fraction'] += clip_frac.item()
+                    n_batches += 1
+
+        else:
+            # MLP path — unchanged shuffled-batch training
+            include_next_obs = (
+                self.caps_loss.enabled and self.caps_loss.lambda_temporal > 0
+            )
+            for _epoch in range(self.n_epochs):
+                for batch in self.buffer.get(self.batch_size, include_next_obs=include_next_obs):
+                    if include_next_obs:
+                        (
+                            obs_batch, actions_batch, old_values_batch,
+                            old_log_probs_batch, advantages_batch, returns_batch,
+                            next_obs_batch, valid_temporal_mask,
+                        ) = batch
+                    else:
+                        (
+                            obs_batch, actions_batch, old_values_batch,
+                            old_log_probs_batch, advantages_batch, returns_batch,
+                        ) = batch
+                        next_obs_batch = None
+                        valid_temporal_mask = None
+
                     new_log_probs, entropy, new_values = \
                         self.actor_critic.evaluate_actions(obs_batch, actions_batch)
-                else:
-                    (
-                        obs_batch,
-                        actions_batch,
-                        old_values_batch,
-                        old_log_probs_batch,
-                        advantages_batch,
-                        returns_batch,
-                    ) = batch
-                    next_obs_batch = None
-                    valid_temporal_mask = None
-                    new_log_probs, entropy, new_values = \
-                        self.actor_critic.evaluate_actions(obs_batch, actions_batch)
 
-                # Policy loss (PPO clip objective)
-                ratio = torch.exp(new_log_probs - old_log_probs_batch)
-                surr1 = ratio * advantages_batch
-                surr2 = torch.clamp(
-                    ratio,
-                    1.0 - self.clip_epsilon,
-                    1.0 + self.clip_epsilon
-                ) * advantages_batch
-                policy_loss = -torch.min(surr1, surr2).mean()
+                    ratio = torch.exp(new_log_probs - old_log_probs_batch)
+                    surr1 = ratio * advantages_batch
+                    surr2 = torch.clamp(
+                        ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon
+                    ) * advantages_batch
+                    policy_loss = -torch.min(surr1, surr2).mean()
 
-                # Value loss (clipped)
-                value_pred_clipped = old_values_batch + torch.clamp(
-                    new_values - old_values_batch,
-                    -self.clip_epsilon,
-                    self.clip_epsilon
-                )
-                value_loss1 = (new_values - returns_batch) ** 2
-                value_loss2 = (value_pred_clipped - returns_batch) ** 2
-                value_loss = 0.5 * torch.max(value_loss1, value_loss2).mean()
-
-                # Entropy bonus
-                entropy_loss = -entropy.mean()
-
-                # CAPS loss (if enabled)
-                caps_loss = torch.tensor(0.0, device=self.device)
-                if self.caps_loss.enabled:
-                    caps_dict = self.caps_loss.compute(
-                        self.actor_critic.actor,
-                        obs_t=obs_batch if include_next_obs else None,
-                        obs_t_next=next_obs_batch,
-                        obs_spatial=obs_batch,
-                        valid_temporal_mask=valid_temporal_mask
+                    value_pred_clipped = old_values_batch + torch.clamp(
+                        new_values - old_values_batch, -self.clip_epsilon, self.clip_epsilon
                     )
-                    caps_loss = caps_dict['caps_loss']
+                    value_loss = 0.5 * torch.max(
+                        (new_values - returns_batch) ** 2,
+                        (value_pred_clipped - returns_batch) ** 2
+                    ).mean()
 
-                # Total loss
-                loss = (
-                    policy_loss
-                    + self.vf_coef * value_loss
-                    + self.ent_coef * entropy_loss
-                    + caps_loss
-                )
+                    entropy_loss = -entropy.mean()
 
-                # Optimize
-                self.optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(
-                    self.actor_critic.parameters(),
-                    self.max_grad_norm
-                )
-                self.optimizer.step()
+                    caps_loss = torch.tensor(0.0, device=self.device)
+                    if self.caps_loss.enabled:
+                        caps_dict = self.caps_loss.compute(
+                            self.actor_critic.actor,
+                            obs_t=obs_batch if include_next_obs else None,
+                            obs_t_next=next_obs_batch,
+                            obs_spatial=obs_batch,
+                            valid_temporal_mask=valid_temporal_mask,
+                        )
+                        caps_loss = caps_dict['caps_loss']
 
-                # Metrics
-                with torch.no_grad():
-                    approx_kl = ((ratio - 1) - ratio.log()).mean()
-                    clip_frac = ((ratio - 1.0).abs() > self.clip_epsilon).float().mean()
+                    loss = (
+                        policy_loss
+                        + self.vf_coef * value_loss
+                        + self.ent_coef * entropy_loss
+                        + caps_loss
+                    )
 
-                metrics['policy_loss'] += policy_loss.item()
-                metrics['value_loss'] += value_loss.item()
-                metrics['entropy_loss'] += entropy_loss.item()
-                metrics['caps_loss'] += caps_loss.item()
-                metrics['approx_kl'] += approx_kl.item()
-                metrics['clip_fraction'] += clip_frac.item()
+                    self.optimizer.zero_grad()
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+                    self.optimizer.step()
 
-        # Average over batches and epochs
-        n_batches = self.n_epochs * (self.buffer.size() // self.batch_size + 1)
+                    with torch.no_grad():
+                        approx_kl = ((ratio - 1) - ratio.log()).mean()
+                        clip_frac = ((ratio - 1.0).abs() > self.clip_epsilon).float().mean()
+
+                    metrics['policy_loss'] += policy_loss.item()
+                    metrics['value_loss'] += value_loss.item()
+                    metrics['entropy_loss'] += entropy_loss.item()
+                    metrics['caps_loss'] += caps_loss.item()
+                    metrics['approx_kl'] += approx_kl.item()
+                    metrics['clip_fraction'] += clip_frac.item()
+                    n_batches += 1
+
         for key in metrics:
-            metrics[key] /= n_batches
+            metrics[key] /= max(1, n_batches)
 
         # Reset buffer
         self.buffer.reset()

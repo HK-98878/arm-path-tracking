@@ -203,6 +203,59 @@ class RolloutBuffer:
 
             yield batch
 
+    def get_sequences(
+        self,
+        seq_len: int,
+        batch_size_sequences: int,
+    ) -> Generator[Tuple[torch.Tensor, ...], None, None]:
+        """Yield (B, T, ...) sequence batches for TBTT training.
+
+        Slices the buffer into non-overlapping sequences of length seq_len.
+        The last incomplete sequence is dropped. Episode boundaries within a
+        sequence are signalled by the done flag; the network resets hidden state
+        at those points during the forward pass.
+
+        Yields:
+            obs (B,T,obs_dim), actions (B,T,act_dim), dones (B,T),
+            old_values (B,T), old_log_probs (B,T), advantages (B,T), returns (B,T)
+        """
+        size = self.buffer_size if self.full else self.pos
+        n_seqs = size // seq_len
+        if n_seqs == 0:
+            return
+
+        advantages = self.advantages[:size].copy()
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        seq_idx = np.arange(n_seqs)
+        np.random.shuffle(seq_idx)
+
+        def _slice(arr, i):
+            return arr[i * seq_len:(i + 1) * seq_len]
+
+        for start in range(0, n_seqs, batch_size_sequences):
+            batch_idx = seq_idx[start:start + batch_size_sequences]
+            if len(batch_idx) == 0:
+                continue
+
+            obs_b = np.stack([_slice(self.observations, i) for i in batch_idx])
+            act_b = np.stack([_slice(self.actions, i) for i in batch_idx])
+            don_b = np.stack([_slice(self.dones, i) for i in batch_idx])
+            val_b = np.stack([_slice(self.values, i) for i in batch_idx])
+            lp_b = np.stack([_slice(self.log_probs, i) for i in batch_idx])
+            adv_b = np.stack([_slice(advantages, i) for i in batch_idx])
+            ret_b = np.stack([_slice(self.returns, i) for i in batch_idx])
+
+            yield (
+                torch.from_numpy(obs_b).float().to(self.device),
+                torch.from_numpy(act_b).float().to(self.device),
+                torch.from_numpy(don_b).float().to(self.device),
+                torch.from_numpy(val_b).float().to(self.device),
+                torch.from_numpy(lp_b).float().to(self.device),
+                torch.from_numpy(adv_b).float().to(self.device),
+                torch.from_numpy(ret_b).float().to(self.device),
+            )
+
     def reset(self):
         """Reset buffer."""
         self.pos = 0
