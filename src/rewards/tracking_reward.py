@@ -37,6 +37,7 @@ class TrackingReward:
         w_ee_jerk: float = 0.0,
         ee_jerk_scale: float = 1.0,
         ee_jerk_clip: Optional[float] = None,
+        jerk_grace_steps: int = 0,
     ):
         """Initialize reward computer.
 
@@ -86,6 +87,7 @@ class TrackingReward:
         self.w_ee_jerk = w_ee_jerk
         self.ee_jerk_scale = max(ee_jerk_scale, 1e-8)
         self.ee_jerk_clip = ee_jerk_clip
+        self.jerk_grace_steps = jerk_grace_steps
 
     def compute(
         self,
@@ -98,6 +100,7 @@ class TrackingReward:
         arc_progress: Optional[float] = None,
         vel_error_sq: Optional[float] = None,
         ee_accel_sq: Optional[float] = None,
+        episode_step: Optional[int] = None,
     ) -> dict:
         """Compute reward and its components.
 
@@ -189,7 +192,8 @@ class TrackingReward:
         # freely when far off-path. Complements CAPS temporal smoothness (which acts on
         # policy outputs) with a direct physical signal.
         p_ee_jerk = 0.0
-        if self.w_ee_jerk > 0 and ee_accel_sq is not None:
+        in_grace = episode_step is not None and episode_step < self.jerk_grace_steps
+        if self.w_ee_jerk > 0 and ee_accel_sq is not None and not in_grace:
             accel_sq = ee_accel_sq if self.ee_jerk_clip is None else min(ee_accel_sq, self.ee_jerk_clip)
             p_ee_jerk = self.w_ee_jerk * pos_quality * accel_sq / self.ee_jerk_scale
 
@@ -223,6 +227,7 @@ class TrackingReward:
         arc_progress: Optional[float] = None,
         prev_ee_vel: Optional[np.ndarray] = None,
         dt: float = 0.01,
+        episode_step: Optional[int] = None,
     ) -> dict:
         """Compute reward from full state (convenience wrapper).
 
@@ -282,6 +287,7 @@ class TrackingReward:
             arc_progress=arc_progress,
             vel_error_sq=vel_error_sq,
             ee_accel_sq=ee_accel_sq,
+            episode_step=episode_step,
         )
 
     def max_reward(self) -> float:

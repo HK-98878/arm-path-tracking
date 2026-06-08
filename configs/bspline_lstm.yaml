@@ -57,6 +57,7 @@ reward:
   w_ee_jerk: 0.3
   ee_jerk_scale: 50.0
   ee_jerk_clip: 50.0
+  jerk_grace_steps: 50
   w_vel_match: 0.0
   sig_pos: 0.15
   sig_ori: 0.50

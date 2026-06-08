@@ -413,6 +413,7 @@ class EETrackingEnv(gym.Env):
             arc_progress=arc_progress,
             prev_ee_vel=self.prev_ee_vel,
             dt=self.dt,
+            episode_step=self.step_count,
         )
 
         reward = reward_dict['reward']
