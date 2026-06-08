@@ -36,6 +36,7 @@ class TrackingReward:
         vel_match_gate_max: float = 0.05,
         w_ee_jerk: float = 0.0,
         ee_jerk_scale: float = 1.0,
+        ee_jerk_clip: Optional[float] = None,
     ):
         """Initialize reward computer.
 
@@ -84,6 +85,7 @@ class TrackingReward:
         self.vel_match_gate_max = vel_match_gate_max
         self.w_ee_jerk = w_ee_jerk
         self.ee_jerk_scale = max(ee_jerk_scale, 1e-8)
+        self.ee_jerk_clip = ee_jerk_clip
 
     def compute(
         self,
@@ -188,7 +190,8 @@ class TrackingReward:
         # policy outputs) with a direct physical signal.
         p_ee_jerk = 0.0
         if self.w_ee_jerk > 0 and ee_accel_sq is not None:
-            p_ee_jerk = self.w_ee_jerk * pos_quality * ee_accel_sq / self.ee_jerk_scale
+            accel_sq = ee_accel_sq if self.ee_jerk_clip is None else min(ee_accel_sq, self.ee_jerk_clip)
+            p_ee_jerk = self.w_ee_jerk * pos_quality * accel_sq / self.ee_jerk_scale
 
         # Total reward
         reward = r_pos + r_ori + r_vel + r_vel_match - p_action_rate - p_joint_vel - p_ee_jerk
