@@ -52,7 +52,7 @@ control:
 reward:
   w_pos: 1.0
   w_ori: 1.0
-  w_vel: 0.7
+  w_vel: 0.5
   w_action_rate: 0.05
   w_joint_vel: 0.001
   w_ee_jerk: 0.3
@@ -120,7 +120,7 @@ curriculum:
   enabled: true
   stages:
     - speed: 0.05
-      sig_pos: 0.15
+      sig_pos: 0.05
       sig_ori: 0.50
       w_ori: 0.3
       orientation_modes: ['fixed']
@@ -129,12 +129,12 @@ curriculum:
       obs_noise_pos_std: 0.0
       obs_noise_vel_std: 0.0
       lookahead_noise_std: 0.0
-      advance_threshold: 0.08
+      advance_threshold: 0.015
       max_steps: 300000
       min_steps_in_stage: 150000
 
     - speed: 0.10
-      sig_pos: 0.10
+      sig_pos: 0.04
       sig_ori: 0.25
       w_ori: 0.5
       orientation_modes: ['fixed']
@@ -143,12 +143,12 @@ curriculum:
       obs_noise_pos_std: 0.0
       obs_noise_vel_std: 0.0
       lookahead_noise_std: 0.0
-      advance_threshold: 0.06
+      advance_threshold: 0.018
       max_steps: 400000
       min_steps_in_stage: 200000
 
     - speed: 0.10
-      sig_pos: 0.10
+      sig_pos: 0.04
       sig_ori: 0.25
       w_ori: 0.6
       orientation_modes: ['fixed']
@@ -158,7 +158,7 @@ curriculum:
       obs_noise_vel_std: 0.0
       lookahead_noise_std: 0.0
       min_curvature_radius: 0.12
-      advance_threshold: 0.07
+      advance_threshold: 0.020
       max_steps: null
 
     - speed: 0.15
