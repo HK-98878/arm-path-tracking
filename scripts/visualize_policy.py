@@ -144,6 +144,7 @@ def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='cir
         render_mode=render_mode,
         dls_config=config.control.dls.to_dict() if hasattr(config.control, 'dls') else None,
         include_orientation=include_orientation,
+        lookahead_n=getattr(config.env, 'lookahead_n', 5),
         lookahead_ds=getattr(config.env, 'lookahead_ds', 0.02),
         randomize_start_position=False if fixed_start else getattr(config.env, 'randomize_start_position', False),
         start_position_noise=getattr(config.env, 'start_position_noise', 0.06),
