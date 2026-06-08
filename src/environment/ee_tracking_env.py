@@ -49,6 +49,7 @@ class EETrackingEnv(gym.Env):
         start_position_noise: float = 0.06,
         include_ee_accel: bool = False,
         obs_noise_config: Optional[dict] = None,
+        p_control_alpha: float = 0.0,
     ):
         """Initialize environment.
 
@@ -153,6 +154,8 @@ class EETrackingEnv(gym.Env):
         self.step_count = 0
         self.prev_action = np.zeros(6, dtype=np.float32)
         self.prev_ee_vel = np.zeros(3, dtype=np.float64)
+
+        self.p_control_alpha = p_control_alpha
 
         # Bspline config: set from make_env_with_stage() for per-episode regeneration
         self._bspline_config: Optional[dict] = None
@@ -413,7 +416,6 @@ class EETrackingEnv(gym.Env):
             arc_progress=arc_progress,
             prev_ee_vel=self.prev_ee_vel,
             dt=self.dt,
-            episode_step=self.step_count,
         )
 
         reward = reward_dict['reward']
@@ -503,10 +505,19 @@ class EETrackingEnv(gym.Env):
         ee_quat = np.array([ee_quat_mj[1], ee_quat_mj[2], ee_quat_mj[3], ee_quat_mj[0]])
         R_we = quat_to_matrix(ee_quat)  # world <- ee rotation
 
-        # Feedforward: tangent step from path geometry (world frame)
         s_wrapped = self.s_current % self.path.total_length
-        v_ref = self.path.velocity(s_wrapped)
-        feedforward_linear = v_ref * self.dt
+
+        # Baseline linear command: P-control toward current path target, or path-tangent
+        # feedforward if P-control is disabled. The two modes are mutually exclusive —
+        # P-control at alpha≥0.05 already provides sufficient startup authority and
+        # on-path tracking without the tangent feedforward.
+        if self.p_control_alpha > 0:
+            target_pos = self.path.position(s_wrapped)
+            ee_pos_now = self.data.xpos[self.ee_body_id]
+            feedforward_linear = self.p_control_alpha * (target_pos - ee_pos_now)
+        else:
+            v_ref = self.path.velocity(s_wrapped)
+            feedforward_linear = v_ref * self.dt
 
         # Angular feedforward: path angular velocity if orientation control enabled
         if self.include_orientation:

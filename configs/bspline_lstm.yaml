@@ -15,6 +15,7 @@ env:
   randomize_start_position: true
   start_position_noise: 0.06
   include_ee_accel: false
+  p_control_alpha: 0.05
 
 # Path (base config; curriculum stages override speed and path_types)
 path:
@@ -51,13 +52,12 @@ control:
 reward:
   w_pos: 1.0
   w_ori: 1.0
-  w_vel: 0.5
+  w_vel: 0.7
   w_action_rate: 0.05
   w_joint_vel: 0.001
   w_ee_jerk: 0.3
   ee_jerk_scale: 50.0
   ee_jerk_clip: 50.0
-  jerk_grace_steps: 50
   w_vel_match: 0.0
   sig_pos: 0.15
   sig_ori: 0.50

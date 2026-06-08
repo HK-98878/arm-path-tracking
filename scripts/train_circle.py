@@ -260,6 +260,7 @@ def make_env(config, bidirectional=False, include_orientation=False, path_type='
         lookahead_ds=getattr(config.env, 'lookahead_ds', 0.02),
         randomize_start_position=getattr(config.env, 'randomize_start_position', False),
         start_position_noise=getattr(config.env, 'start_position_noise', 0.06),
+        p_control_alpha=getattr(config.env, 'p_control_alpha', 0.0),
     )
 
     return env
@@ -367,6 +368,7 @@ def make_env_with_stage(config, stage_params, bidirectional=False, path_type_ove
         start_position_noise=getattr(config.env, 'start_position_noise', 0.06),
         include_ee_accel=include_ee_accel,
         obs_noise_config=obs_noise_config if has_noise else None,
+        p_control_alpha=getattr(config.env, 'p_control_alpha', 0.0),
     )
 
     # Store bspline config on env for per-episode regeneration in reset()
