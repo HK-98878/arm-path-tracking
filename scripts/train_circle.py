@@ -507,10 +507,15 @@ def evaluate(env, agent, obs_rms, num_episodes=5, eval_seed=None):
     # EE kinematic jerk (physical, from positions — averaged across all episodes)
     if len(all_positions) > 0:
         ee_jerk_rms_values = []
+        ee_jerk_rms_latter80_values = []
         for positions in all_positions:
             ej = compute_ee_jerk_metrics(np.array(positions), env.dt)
             ee_jerk_rms_values.append(ej['rms_jerk'])
+            start_idx = len(positions) // 5  # skip first 20% to exclude startup transient
+            ej_latter = compute_ee_jerk_metrics(np.array(positions[start_idx:]), env.dt)
+            ee_jerk_rms_latter80_values.append(ej_latter['rms_jerk'])
         metrics['ee_jerk_rms'] = float(np.mean(ee_jerk_rms_values))
+        metrics['ee_jerk_rms_latter80'] = float(np.mean(ee_jerk_rms_latter80_values))
 
     # Tracking error metrics (from first episode)
     if len(all_positions) > 0 and len(all_targets) > 0:
@@ -789,7 +794,11 @@ def train(config):
                 # Print per-path breakdown (pos + EE RMS jerk)
                 print(f"  Per-path metrics:")
                 for pt, pm in eval_metrics.get('per_path', {}).items():
-                    jerk_str = f"  jerk={pm['ee_jerk_rms']:.1f}" if 'ee_jerk_rms' in pm else ''
+                    jerk_str = ''
+                    if 'ee_jerk_rms' in pm:
+                        jerk_str = f"  jerk={pm['ee_jerk_rms']:.1f}"
+                        if 'ee_jerk_rms_latter80' in pm:
+                            jerk_str += f"(l80:{pm['ee_jerk_rms_latter80']:.1f})"
                     print(f"    {pt}: pos={pm['pos_error_mean']*1000:.2f}mm  ori={np.degrees(pm['ori_error_mean']):.2f}°{jerk_str}")
             else:
                 # Single-path evaluation (original behavior)
@@ -802,7 +811,10 @@ def train(config):
             print(f"  Mean episode reward: {eval_metrics['mean_episode_reward']:.2f} ± {eval_metrics['std_episode_reward']:.2f}")
             print(f"  Mean episode length: {eval_metrics['mean_episode_length']:.1f}")
             if 'ee_jerk_rms' in eval_metrics:
-                print(f"  EE RMS jerk: {eval_metrics['ee_jerk_rms']:.1f} m/s³")
+                jerk_str = f"{eval_metrics['ee_jerk_rms']:.1f}"
+                if 'ee_jerk_rms_latter80' in eval_metrics:
+                    jerk_str += f"  (latter 80%: {eval_metrics['ee_jerk_rms_latter80']:.1f})"
+                print(f"  EE RMS jerk: {jerk_str} m/s³")
             print(f"  Reward components: r_pos={eval_metrics['mean_r_pos']:.3f}, r_ori={eval_metrics['mean_r_ori']:.3f}, r_vel={eval_metrics['mean_r_vel']:.3f}")
             print(f"  Penalties: action_rate={eval_metrics['mean_p_action_rate']:.2e}, joint_vel={eval_metrics['mean_p_joint_vel']:.2e}")
 
