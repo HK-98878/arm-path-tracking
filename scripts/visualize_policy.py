@@ -146,8 +146,10 @@ def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='cir
         include_orientation=include_orientation,
         lookahead_n=getattr(config.env, 'lookahead_n', 5),
         lookahead_ds=getattr(config.env, 'lookahead_ds', 0.02),
+        curvature_n=getattr(config.env, 'curvature_n', 0),
         randomize_start_position=False if fixed_start else getattr(config.env, 'randomize_start_position', False),
         start_position_noise=getattr(config.env, 'start_position_noise', 0.06),
+        p_control_alpha=getattr(config.env, 'p_control_alpha', 0.0),
     )
 
     if path_type == 'bspline':

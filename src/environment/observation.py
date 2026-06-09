@@ -137,12 +137,27 @@ class ObservationBuilder:
             lookahead_ee.append(p_rel_ee)
         lookahead_ee = np.concatenate(lookahead_ee)  # (lookahead_n * 3,)
 
-        # (c2) Curvature vectors in EE frame: d²r/ds² at distant arc-length samples.
+        # (c2) Curvature vectors in path-tangent frame: d²r/ds² at distant arc-length samples.
         # Approximated as finite tangent difference: (tangent(s_k+ds) - tangent(s_k)) / ds.
         # Sampled at positions immediately beyond the lookahead window.
         # Zero on straight segments; points toward centre of curvature at corners.
+        #
+        # Expressed in the path-tangent frame at s_current (not EE frame) so the signal
+        # is stable as the arm moves: for a circle, the centripetal direction is always
+        # [0, 1/R, 0] in this frame regardless of position on the circle.
         curvature_ee = np.empty(0, dtype=np.float64)
         if self.curvature_n > 0:
+            # Build path-tangent frame at s_current.
+            t_cur = path.tangent(s_current)          # unit tangent
+            world_up = np.array([0., 0., 1.])
+            if abs(np.dot(t_cur, world_up)) > 0.9:   # near-vertical tangent: fall back
+                world_up = np.array([1., 0., 0.])
+            n_cur = np.cross(world_up, t_cur)
+            n_cur /= np.linalg.norm(n_cur)
+            b_cur = np.cross(t_cur, n_cur)
+            # R_world_to_path.T = [t_cur | n_cur | b_cur], so R_world_to_path projects world → frame
+            R_world_to_path = np.column_stack([t_cur, n_cur, b_cur]).T
+
             closed = getattr(path, 'closed', True)
             total = path.total_length
             curv_parts = []
@@ -154,7 +169,7 @@ class ObservationBuilder:
                 t0 = path.tangent(s_k)
                 t1 = path.tangent(s_k1)
                 curv_world = (t1 - t0) / abs(self.lookahead_ds)
-                curv_parts.append(R_ew @ curv_world)
+                curv_parts.append(R_world_to_path @ curv_world)
             curvature_ee = np.concatenate(curv_parts)  # (curvature_n * 3,)
 
         # (d) Reference velocity in EE frame
