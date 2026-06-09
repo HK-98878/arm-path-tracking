@@ -10,8 +10,9 @@ env:
   dt: 0.01  # 100 Hz control
   max_episode_steps: 1000
   ee_body_name: "attachment"
-  lookahead_n: 8
+  lookahead_n: 3
   lookahead_ds: 0.04
+  curvature_n: 5
   randomize_start_position: true
   start_position_noise: 0.06
   include_ee_accel: false
@@ -162,7 +163,7 @@ curriculum:
       max_steps: null
 
     - speed: 0.15
-      sig_pos: 0.06
+      sig_pos: 0.030
       sig_ori: 0.20
       w_ori: 0.8
       orientation_modes: ['fixed']
@@ -176,7 +177,7 @@ curriculum:
       max_steps: null
 
     - speed: 0.15
-      sig_pos: 0.05
+      sig_pos: 0.020
       sig_ori: 0.16
       w_ori: 0.9
       orientation_modes: ['fixed']
@@ -190,7 +191,7 @@ curriculum:
       max_steps: null
 
     - speed: 0.20
-      sig_pos: 0.03
+      sig_pos: 0.015
       sig_ori: 0.12
       w_ori: 1.0
       orientation_modes: ['fixed']

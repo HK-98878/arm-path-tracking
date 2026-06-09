@@ -34,6 +34,7 @@ class ObservationBuilder:
         joint_limits: Tuple[np.ndarray, np.ndarray],
         lookahead_n: int = 5,
         lookahead_ds: float = 0.02,
+        curvature_n: int = 0,
         include_ee_accel: bool = False,
         obs_noise_config: Optional[Dict] = None,
         dt: float = 0.01,
@@ -45,6 +46,9 @@ class ObservationBuilder:
             joint_limits: Tuple of (q_min, q_max) arrays
             lookahead_n: Number of lookahead points
             lookahead_ds: Distance between lookahead points (meters)
+            curvature_n: Number of curvature vectors appended after lookahead points.
+                Each is d²r/ds² at arc-length s + (lookahead_n+k)*ds, expressed in
+                EE frame (3 dims each). Zero on straights, nonzero at corners.
             include_ee_accel: If True, add 3-dim EE linear acceleration slot
             obs_noise_config: Optional dict with noise std keys:
                 obs_noise_pos_std, obs_noise_vel_std, lookahead_noise_std
@@ -54,6 +58,7 @@ class ObservationBuilder:
         self.q_min, self.q_max = joint_limits
         self.lookahead_n = lookahead_n
         self.lookahead_ds = lookahead_ds
+        self.curvature_n = curvature_n
         self.include_ee_accel = include_ee_accel
         self.obs_noise_config = obs_noise_config or {}
         self.dt = dt
@@ -63,6 +68,7 @@ class ObservationBuilder:
             3 +  # position error
             3 +  # orientation error
             lookahead_n * 3 +  # lookahead points
+            curvature_n * 3 +  # curvature vectors (d²r/ds² at distant arc-length samples)
             3 +  # reference velocity
             3 +  # EE linear velocity
             3 +  # EE angular velocity
@@ -131,6 +137,26 @@ class ObservationBuilder:
             lookahead_ee.append(p_rel_ee)
         lookahead_ee = np.concatenate(lookahead_ee)  # (lookahead_n * 3,)
 
+        # (c2) Curvature vectors in EE frame: d²r/ds² at distant arc-length samples.
+        # Approximated as finite tangent difference: (tangent(s_k+ds) - tangent(s_k)) / ds.
+        # Sampled at positions immediately beyond the lookahead window.
+        # Zero on straight segments; points toward centre of curvature at corners.
+        curvature_ee = np.empty(0, dtype=np.float64)
+        if self.curvature_n > 0:
+            closed = getattr(path, 'closed', True)
+            total = path.total_length
+            curv_parts = []
+            for k in range(self.lookahead_n + 1, self.lookahead_n + 1 + self.curvature_n):
+                s_k  = s_current + k * ds_signed
+                s_k1 = s_current + (k + 1) * ds_signed
+                s_k  = (s_k  % total) if closed else float(np.clip(s_k,  0.0, total))
+                s_k1 = (s_k1 % total) if closed else float(np.clip(s_k1, 0.0, total))
+                t0 = path.tangent(s_k)
+                t1 = path.tangent(s_k1)
+                curv_world = (t1 - t0) / abs(self.lookahead_ds)
+                curv_parts.append(R_ew @ curv_world)
+            curvature_ee = np.concatenate(curv_parts)  # (curvature_n * 3,)
+
         # (d) Reference velocity in EE frame
         v_ref_world = path.velocity(s_current)
         v_ref_ee = R_ew @ v_ref_world  # (3,)
@@ -167,6 +193,7 @@ class ObservationBuilder:
             pos_err_ee,       # 3
             ori_err_ee,       # 3
             lookahead_ee,     # lookahead_n * 3
+            curvature_ee,     # curvature_n * 3  (empty array when curvature_n=0)
             v_ref_ee,         # 3
             ee_lin_vel_ee,    # 3
             ee_ang_vel_ee,    # 3
@@ -199,8 +226,8 @@ class ObservationBuilder:
 
             vel_std = self.obs_noise_config.get('obs_noise_vel_std', 0.0)
             if vel_std > 0:
-                # EE linear velocity starts after: pos(3)+ori(3)+lookahead(n*3)+ref_vel(3)
-                vel_start = 3 + 3 + self.lookahead_n * 3 + 3
+                # EE linear velocity starts after: pos(3)+ori(3)+lookahead(n*3)+curvature(n*3)+ref_vel(3)
+                vel_start = 3 + 3 + self.lookahead_n * 3 + self.curvature_n * 3 + 3
                 obs[vel_start:vel_start + 3] += rng.normal(
                     0.0, vel_std, 3
                 ).astype(np.float32)
@@ -225,6 +252,7 @@ class ObservationBuilder:
             3 +  # pos error
             3 +  # ori error
             self.lookahead_n * 3 +  # lookahead
+            self.curvature_n * 3 +  # curvature vectors
             3 +  # ref vel
             3 +  # ee lin vel
             3 +  # ee ang vel
