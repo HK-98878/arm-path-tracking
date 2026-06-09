@@ -57,7 +57,7 @@ reward:
   w_joint_vel: 0.001
   w_ee_jerk: 0.3
   ee_jerk_scale: 50.0
-  ee_jerk_clip: 200.0
+  ee_jerk_clip: 50.0
   w_vel_match: 0.0
   sig_pos: 0.15
   sig_ori: 0.50
@@ -131,7 +131,7 @@ curriculum:
       lookahead_noise_std: 0.0
       advance_threshold: 0.015
       max_steps: 300000
-      min_steps_in_stage: 150000
+      min_steps_in_stage: 30000
 
     - speed: 0.10
       sig_pos: 0.04
@@ -145,7 +145,7 @@ curriculum:
       lookahead_noise_std: 0.0
       advance_threshold: 0.018
       max_steps: 400000
-      min_steps_in_stage: 200000
+      min_steps_in_stage: 100000
 
     - speed: 0.10
       sig_pos: 0.04
