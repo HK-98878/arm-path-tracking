@@ -144,6 +144,35 @@ class PPO:
             log_prob.cpu().item()
         )
 
+    def log_prob_of_action(
+        self,
+        obs: np.ndarray,
+        action: np.ndarray,
+        h_actor=None,
+    ) -> float:
+        """Compute log_prob for a specific action under the current policy.
+
+        Uses h_actor as the LSTM initial state (should be the hidden state
+        *before* the forward pass for this obs, i.e. snapshotted prior to
+        select_action). For the MLP case h_actor is ignored.
+        """
+        from torch.distributions import Normal as _Normal
+        with torch.no_grad():
+            obs_t = torch.from_numpy(obs).float().unsqueeze(0).to(self.device)
+            act_t = torch.from_numpy(action).float().unsqueeze(0).to(self.device)
+            if self.is_lstm:
+                actor = self.actor_critic.actor
+                features, _ = actor._features(obs_t, h_actor)
+                mean = actor.mean(features)
+                std = torch.exp(actor.log_std)
+                act_clamped = torch.clamp(act_t, -0.9999, 0.9999)
+                x = torch.atanh(act_clamped)
+                lp = _Normal(mean, std).log_prob(x).sum(-1)
+                lp = lp - torch.sum(torch.log(1 - act_t.pow(2) + 1e-6), dim=-1)
+            else:
+                lp, _, _ = self.actor_critic.evaluate_actions(obs_t, act_t)
+        return lp.cpu().item()
+
     def store_transition(
         self,
         obs: np.ndarray,

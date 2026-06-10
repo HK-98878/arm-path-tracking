@@ -733,6 +733,12 @@ def train(config):
             reward_normalizer.freeze()
             print(f"\n  [Step {timestep}] Normalization frozen.")
 
+        # Snapshot hidden state before forward pass so warmup log_prob uses correct h.
+        if env_warmup_steps > 0 and episode_length < env_warmup_steps and agent.is_lstm:
+            h_pre = (agent.actor_hidden[0].clone(), agent.actor_hidden[1].clone())
+        else:
+            h_pre = None
+
         # Select action
         action, value, log_prob = agent.select_action(obs)
 
@@ -746,9 +752,15 @@ def train(config):
         obs_rms.update(next_obs)
         next_obs_normalized = obs_rms.normalize(next_obs)
 
-        # Store transition with normalized reward (skip warmup steps — env zeroes action
-        # during warmup so policy output doesn't match executed action there)
-        if episode_length >= env_warmup_steps:
+        # Store transition. During env warmup the env zeroes the RL action, so we
+        # store action=0 with its correct log_prob (computed against the pre-forward h).
+        # This trains the LSTM to output ~0 at episode-start observations (letting
+        # P-control handle it) while still giving it gradient signal on those states.
+        if episode_length < env_warmup_steps:
+            zero_action = np.zeros_like(action)
+            zero_log_prob = agent.log_prob_of_action(obs, zero_action, h_pre)
+            agent.store_transition(obs, zero_action, reward_normalized, value, zero_log_prob, done)
+        else:
             agent.store_transition(obs, action, reward_normalized, value, log_prob, done)
 
         episode_reward += reward
