@@ -59,7 +59,7 @@ reward:
   w_vel: 0.5
   w_action_rate: 0.05
   w_joint_vel: 0.001
-  w_ee_jerk: 0.3
+  w_ee_jerk: 0.45
   ee_jerk_scale: 50.0
   ee_jerk_clip: 50.0
   w_vel_match: 0.0
