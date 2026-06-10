@@ -164,6 +164,7 @@ curriculum:
       min_curvature_radius: 0.12
       advance_threshold: 0.020
       max_steps: null
+      min_steps_in_stage: 100000
 
     - speed: 0.15
       sig_pos: 0.030
@@ -178,6 +179,7 @@ curriculum:
       min_curvature_radius: 0.09
       advance_threshold: 0.06
       max_steps: null
+      min_steps_in_stage: 100000
 
     - speed: 0.15
       sig_pos: 0.020
@@ -192,6 +194,7 @@ curriculum:
       min_curvature_radius: 0.09
       advance_threshold: 0.04
       max_steps: null
+      min_steps_in_stage: 100000
 
     - speed: 0.20
       sig_pos: 0.015
