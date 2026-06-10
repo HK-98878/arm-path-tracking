@@ -80,6 +80,9 @@ def parse_args():
                        help='Path type to visualize')
     parser.add_argument('--bspline-seed', type=int, default=None,
                        help='RNG seed for bspline path generation. Omit for a random spline each episode.')
+    parser.add_argument('--noise', action='store_true',
+                       help='Inject observation noise (from final curriculum stage config). '
+                            'Errors if no noise is configured.')
     parser.add_argument('--render-width', type=int, default=640,
                        help='Render width')
     parser.add_argument('--render-height', type=int, default=480,
@@ -94,8 +97,31 @@ def setup_mujoco_gl(mode):
     print(f"Using MUJOCO_GL={gl_backend}")
 
 
+def get_noise_config(config):
+    """Return noise config dict from top-level config or final curriculum stage, or None."""
+    noise_section = getattr(config, 'noise', None)
+    if noise_section is not None:
+        cfg = noise_section.to_dict() if hasattr(noise_section, 'to_dict') else dict(noise_section)
+        if any(v > 0 for v in cfg.values()):
+            return cfg
+    curriculum = getattr(config, 'curriculum', None)
+    if curriculum is not None:
+        stages = getattr(curriculum, 'stages', None)
+        if stages:
+            last = stages[-1]
+            last_dict = last.to_dict() if hasattr(last, 'to_dict') else dict(last)
+            cfg = {
+                'obs_noise_pos_std': last_dict.get('obs_noise_pos_std', 0.0),
+                'obs_noise_vel_std': last_dict.get('obs_noise_vel_std', 0.0),
+                'lookahead_noise_std': last_dict.get('lookahead_noise_std', 0.0),
+            }
+            if any(v > 0 for v in cfg.values()):
+                return cfg
+    return None
+
+
 def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='circle',
-             fixed_start=False, bspline_seed=None):
+             fixed_start=False, bspline_seed=None, obs_noise_config=None):
     """Create environment from config."""
     speed = config.path.speed
     if reverse_path:
@@ -150,6 +176,7 @@ def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='cir
         randomize_start_position=False if fixed_start else getattr(config.env, 'randomize_start_position', False),
         start_position_noise=getattr(config.env, 'start_position_noise', 0.06),
         p_control_alpha=getattr(config.env, 'p_control_alpha', 0.0),
+        obs_noise_config=obs_noise_config,
     )
 
     if path_type == 'bspline':
@@ -363,12 +390,24 @@ def main():
     print(f"\nLoading config: {args.config}")
     config = load_config(args.config)
 
+    # Resolve noise config
+    obs_noise_config = None
+    if args.noise:
+        obs_noise_config = get_noise_config(config)
+        if obs_noise_config is None:
+            sys.exit(
+                "Error: --noise specified but no noise configuration found. "
+                "Add obs_noise_pos_std/obs_noise_vel_std/lookahead_noise_std to the final "
+                "curriculum stage or a top-level 'noise' section in the config."
+            )
+        print(f"  Noise enabled: {obs_noise_config}")
+
     # Create environment
     print("Creating environment...")
     render_mode = 'rgb_array' if args.mode in ['video', 'headless'] else None
     env = make_env(config, render_mode=render_mode, reverse_path=args.reverse_path,
                    path_type=args.path_type, fixed_start=args.fixed_start,
-                   bspline_seed=args.bspline_seed)
+                   bspline_seed=args.bspline_seed, obs_noise_config=obs_noise_config)
     print(f"  Observation space: {env.observation_space.shape}")
     print(f"  Action space: {env.action_space.shape}")
 
