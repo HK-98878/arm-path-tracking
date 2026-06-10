@@ -191,7 +191,7 @@ class TrackingReward:
         p_ee_jerk = 0.0
         if self.w_ee_jerk > 0 and ee_accel_sq is not None:
             accel_sq = ee_accel_sq if self.ee_jerk_clip is None else min(ee_accel_sq, self.ee_jerk_clip)
-            p_ee_jerk = self.w_ee_jerk * pos_quality * accel_sq / self.ee_jerk_scale
+            p_ee_jerk = self.w_ee_jerk * accel_sq / self.ee_jerk_scale
 
         # Total reward
         reward = r_pos + r_ori + r_vel + r_vel_match - p_action_rate - p_joint_vel - p_ee_jerk

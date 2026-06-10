@@ -1,7 +1,9 @@
 # LSTM policy curriculum — same 5-stage structure as bspline_curriculum.yaml (Run 73 baseline).
 # Changes vs bspline_curriculum.yaml:
 #   - network_type: lstm, lstm_hidden_size: 256 (separate actor and critic LSTMs)
-#   - lambda_temporal: 0.1 (re-enabled Run 93: LSTM does not self-smooth sufficiently; data showed post-startup jerk above P-control)
+#   - lambda_temporal: 0.0 (CAPS disabled: Run 93 showed lambda=0.1 catastrophically broke bspline jerk at 2022 m/s3)
+#   - p_control_alpha: 0.05 (reverted from 0.02: Run 93 config)
+#   - ee_jerk penalty: pos_quality gate removed (gate created self-sustaining bimodal attractor — oscillating reduced penalty)
 #   - hidden_sizes retained for reference but unused when network_type=lstm
 
 # Environment
@@ -15,7 +17,7 @@ env:
   randomize_start_position: true
   start_position_noise: 0.06
   include_ee_accel: false
-  p_control_alpha: 0.02
+  p_control_alpha: 0.05
 
 # Path (base config; curriculum stages override speed and path_types)
 path:
@@ -90,10 +92,10 @@ ppo:
   seq_len: 16
   target_kl: 0.01
 
-# CAPS: temporal disabled (LSTM handles temporal smoothness), spatial retained
+# CAPS: temporal disabled (breaks bspline corner corrections), spatial retained
 caps:
   enabled: true
-  lambda_temporal: 0.1
+  lambda_temporal: 0.0
   lambda_spatial: 0.1
   spatial_noise_std: 0.01
 
