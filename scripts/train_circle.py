@@ -262,6 +262,7 @@ def make_env(config, bidirectional=False, include_orientation=False, path_type='
         randomize_start_position=getattr(config.env, 'randomize_start_position', False),
         start_position_noise=getattr(config.env, 'start_position_noise', 0.06),
         p_control_alpha=getattr(config.env, 'p_control_alpha', 0.0),
+        warmup_steps=getattr(config.env, 'warmup_steps', 0),
     )
 
     return env
@@ -371,6 +372,7 @@ def make_env_with_stage(config, stage_params, bidirectional=False, path_type_ove
         include_ee_accel=include_ee_accel,
         obs_noise_config=obs_noise_config if has_noise else None,
         p_control_alpha=getattr(config.env, 'p_control_alpha', 0.0),
+        warmup_steps=getattr(config.env, 'warmup_steps', 0),
     )
 
     # Store bspline config on env for per-episode regeneration in reset()
@@ -694,6 +696,10 @@ def train(config):
     print(f"  Using running observation normalization (freeze after {warmup_steps} steps)")
     print(f"  Using reward normalization")
 
+    # Episode warmup: skip buffer storage during first N steps to prevent incorrect
+    # credit assignment (env zeroes RL action during warmup, so stored action != executed action).
+    env_warmup_steps = getattr(config.env, 'warmup_steps', 0)
+
     # Training loop
     obs, _ = env.reset()
     obs_rms.update(obs)
@@ -740,8 +746,10 @@ def train(config):
         obs_rms.update(next_obs)
         next_obs_normalized = obs_rms.normalize(next_obs)
 
-        # Store transition with normalized reward
-        agent.store_transition(obs, action, reward_normalized, value, log_prob, done)
+        # Store transition with normalized reward (skip warmup steps — env zeroes action
+        # during warmup so policy output doesn't match executed action there)
+        if episode_length >= env_warmup_steps:
+            agent.store_transition(obs, action, reward_normalized, value, log_prob, done)
 
         episode_reward += reward
         episode_length += 1

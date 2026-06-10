@@ -176,6 +176,7 @@ def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='cir
         randomize_start_position=False if fixed_start else getattr(config.env, 'randomize_start_position', False),
         start_position_noise=getattr(config.env, 'start_position_noise', 0.06),
         p_control_alpha=getattr(config.env, 'p_control_alpha', 0.0),
+        warmup_steps=getattr(config.env, 'warmup_steps', 0),
         obs_noise_config=obs_noise_config,
     )
 

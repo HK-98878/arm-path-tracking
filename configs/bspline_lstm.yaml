@@ -4,6 +4,7 @@
 #   - lambda_temporal: 0.0 (CAPS disabled: Run 93 showed lambda=0.1 catastrophically broke bspline jerk at 2022 m/s3)
 #   - p_control_alpha: 0.05 (reverted from 0.02: Run 93 config)
 #   - ee_jerk penalty: pos_quality gate removed (gate created self-sustaining bimodal attractor — oscillating reduced penalty)
+#   - warmup_steps: 50 — RL action zeroed for first 50 steps; LSTM h builds from clean P-control trajectory before taking over
 #   - hidden_sizes retained for reference but unused when network_type=lstm
 
 # Environment
@@ -18,6 +19,7 @@ env:
   start_position_noise: 0.06
   include_ee_accel: false
   p_control_alpha: 0.05
+  warmup_steps: 50
 
 # Path (base config; curriculum stages override speed and path_types)
 path:

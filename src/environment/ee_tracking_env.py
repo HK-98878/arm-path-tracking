@@ -51,6 +51,7 @@ class EETrackingEnv(gym.Env):
         include_ee_accel: bool = False,
         obs_noise_config: Optional[dict] = None,
         p_control_alpha: float = 0.0,
+        warmup_steps: int = 0,
     ):
         """Initialize environment.
 
@@ -158,6 +159,7 @@ class EETrackingEnv(gym.Env):
         self.prev_ee_vel = np.zeros(3, dtype=np.float64)
 
         self.p_control_alpha = p_control_alpha
+        self.warmup_steps = warmup_steps
 
         # Bspline config: set from make_env_with_stage() for per-episode regeneration
         self._bspline_config: Optional[dict] = None
@@ -354,6 +356,12 @@ class EETrackingEnv(gym.Env):
         Returns:
             Tuple of (observation, reward, terminated, truncated, info)
         """
+        # Zero RL residual during warmup — P-control feedforward still applies.
+        # LSTM runs forward via select_action (h-state builds from clean trajectory)
+        # but its output doesn't affect the arm until warmup_steps have elapsed.
+        if self.step_count < self.warmup_steps:
+            action = np.zeros(action.shape, dtype=action.dtype)
+
         # Convert action to target EE twist (residual-feedforward)
         dx_ee_world = self._action_to_ee_twist(action)
 
