@@ -37,6 +37,7 @@ class TrackingReward:
         w_ee_jerk: float = 0.0,
         ee_jerk_scale: float = 1.0,
         ee_jerk_clip: Optional[float] = None,
+        pos_reward_type: str = 'gaussian',
     ):
         """Initialize reward computer.
 
@@ -86,6 +87,7 @@ class TrackingReward:
         self.w_ee_jerk = w_ee_jerk
         self.ee_jerk_scale = max(ee_jerk_scale, 1e-8)
         self.ee_jerk_clip = ee_jerk_clip
+        self.pos_reward_type = pos_reward_type
 
     def compute(
         self,
@@ -121,9 +123,13 @@ class TrackingReward:
             - p_action_rate: Action rate penalty
             - p_joint_vel: Joint velocity penalty
         """
-        # Position reward: exponential with linear fallback for large errors
-        # Exponential provides sharp gradient near path, linear ensures gradient exists far from path
-        pos_quality_exp = np.exp(-(pos_error / self.sig_pos) ** 2)
+        # Position reward: Gaussian or exponential kernel, plus linear fallback for large errors.
+        # 'gaussian':     exp(-(e/σ)²)  — peak gradient at e=σ, saturates for e << σ
+        # 'exponential':  exp(-e/σ)     — constant gradient per mm at all scales, no saturation
+        if self.pos_reward_type == 'exponential':
+            pos_quality_exp = np.exp(-pos_error / self.sig_pos)
+        else:
+            pos_quality_exp = np.exp(-(pos_error / self.sig_pos) ** 2)
 
         # Linear fallback: decays from 1 at 0 to 0 at fallback_max
         # Provides gradient when exponential is near-zero (at large errors)

@@ -337,6 +337,8 @@ def make_env_with_stage(config, stage_params, bidirectional=False, path_type_ove
         reward_config['sig_ori'] = stage_params['sig_ori']
     if stage_params.get('w_ori') is not None:
         reward_config['w_ori'] = stage_params['w_ori']
+    if stage_params.get('pos_reward_type') is not None:
+        reward_config['pos_reward_type'] = stage_params['pos_reward_type']
 
     # Determine if orientation control is enabled
     include_orientation = reward_config.get('w_ori', 0) > 0

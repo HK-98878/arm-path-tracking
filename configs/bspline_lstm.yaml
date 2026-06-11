@@ -208,6 +208,7 @@ curriculum:
       obs_noise_vel_std: 0.005
       lookahead_noise_std: 0.004
       min_curvature_radius: 0.07
+      pos_reward_type: exponential
       advance_threshold: null
       max_steps: 2000000
 
