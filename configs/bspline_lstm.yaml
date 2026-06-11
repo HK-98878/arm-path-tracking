@@ -192,7 +192,7 @@ curriculum:
       obs_noise_vel_std: 0.0
       lookahead_noise_std: 0.0
       min_curvature_radius: 0.09
-      advance_threshold: 0.010
+      advance_threshold: 0.020
       max_steps: null
       min_steps_in_stage: 150000
 

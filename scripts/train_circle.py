@@ -617,6 +617,7 @@ def train(config):
         },
         'evaluations': [],
         'training_updates': [],
+        'stage_transitions': [],
     }
     log_path = output_dir / 'training_log.json'
 
@@ -830,7 +831,7 @@ def train(config):
             print(f"  Penalties: action_rate={eval_metrics['mean_p_action_rate']:.2e}, joint_vel={eval_metrics['mean_p_joint_vel']:.2e}")
 
             # Log to JSON
-            eval_entry = {'timestep': timestep + 1, **eval_metrics}
+            eval_entry = {'timestep': timestep + 1, 'stage': curriculum.current_stage if curriculum.enabled else 0, **eval_metrics}
             training_log['evaluations'].append(eval_entry)
 
             # Log training metrics at eval time (every 10k instead of 256k)
@@ -868,6 +869,13 @@ def train(config):
             # Curriculum advancement check
             if curriculum.should_advance():
                 stage_params = curriculum.advance()
+                training_log['stage_transitions'].append({
+                    'timestep': timestep + 1,
+                    'stage': curriculum.current_stage,
+                    'path_types': stage_params.get('path_types', ['circle']),
+                    'speed': stage_params.get('speed'),
+                    'sig_pos': stage_params.get('sig_pos'),
+                })
 
                 # Suppress spike detection after transition (normalization change causes false spikes)
                 spike_suppression_evals = 3
