@@ -119,9 +119,8 @@ logging:
 
 seed: 42
 
-# Curriculum: 8-stage structure. Run 101 change: speed=0.20 introduced noise-free (stage 5)
-# before noise is added (stage 6), decoupling the two difficulty jumps that caused bspline
-# accuracy to regress 3-4mm at the stage 4→5 transition in Runs 99/100.
+# Curriculum: 6-stage structure matching Run 97 (best result). Run 102 change vs Run 97:
+# final stage sig_pos 0.015 → 0.018 to reduce jerk drift. All intermediate gating removed.
 curriculum:
   enabled: true
   stages:
@@ -194,39 +193,9 @@ curriculum:
       obs_noise_vel_std: 0.0
       lookahead_noise_std: 0.0
       min_curvature_radius: 0.09
-      advance_threshold: 0.020
+      advance_threshold: 0.04
       max_steps: null
-      min_steps_in_stage: 150000
-
-    - speed: 0.20
-      sig_pos: 0.020
-      sig_ori: 0.12
-      w_ori: 1.0
-      orientation_modes: ['fixed']
-      path_types: ['circle', 'figure8', 'bspline']
-      path_weights: [0.25, 0.25, 0.50]
-      obs_noise_pos_std: 0.0
-      obs_noise_vel_std: 0.0
-      lookahead_noise_std: 0.0
-      min_curvature_radius: 0.07
-      advance_threshold: 0.010
-      max_steps: null
-      min_steps_in_stage: 150000
-
-    - speed: 0.20
-      sig_pos: 0.020
-      sig_ori: 0.12
-      w_ori: 1.0
-      orientation_modes: ['fixed']
-      path_types: ['circle', 'figure8', 'bspline']
-      path_weights: [0.25, 0.25, 0.50]
-      obs_noise_pos_std: 0.003
-      obs_noise_vel_std: 0.005
-      lookahead_noise_std: 0.004
-      min_curvature_radius: 0.07
-      advance_threshold: 0.010
-      max_steps: null
-      min_steps_in_stage: 150000
+      min_steps_in_stage: 100000
 
     - speed: 0.20
       sig_pos: 0.018
