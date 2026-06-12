@@ -37,6 +37,7 @@ class PPO:
         lstm_hidden_size: int = 256,
         seq_len: int = 16,
         target_kl: Optional[float] = None,
+        grad_accumulation_steps: int = 1,
         device: str = "cpu",
         caps_config: Optional[dict] = None
     ):
@@ -93,6 +94,7 @@ class PPO:
         self.vf_coef = vf_coef
         self.max_grad_norm = max_grad_norm
         self.n_steps = n_steps
+        self.grad_accumulation_steps = max(1, grad_accumulation_steps)
 
         # Training stats
         self.num_timesteps = 0
@@ -208,8 +210,12 @@ class PPO:
             # No stored hidden needed — buffer just yields raw (obs, actions, dones, ...) sequences.
             seq_len = self.seq_len
             batch_size_seq = max(1, self.batch_size // seq_len)
+            accum_steps = self.grad_accumulation_steps
+            approx_kl = torch.tensor(0.0, device=self.device)
 
             for _epoch in range(self.n_epochs):
+                accum_count = 0
+                self.optimizer.zero_grad()
                 for batch in self.buffer.get_sequences(
                     seq_len, batch_size_seq,
                     self._seq_actor_h, self._seq_actor_c,
@@ -273,25 +279,43 @@ class PPO:
                         + caps_loss
                     )
 
-                    self.optimizer.zero_grad()
-                    loss.backward()
+                    metrics['policy_loss'] += policy_loss.item()
+                    metrics['value_loss'] += value_loss.item()
+                    metrics['entropy_loss'] += entropy_loss.item()
+                    metrics['caps_loss'] += caps_loss.item()
+
+                    (loss / accum_steps).backward()
+                    accum_count += 1
+
+                    if accum_count % accum_steps == 0:
+                        nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+                        self.optimizer.step()
+                        self.optimizer.zero_grad()
+
+                        with torch.no_grad():
+                            approx_kl = ((ratio - 1) - ratio.log()).mean()
+                            clip_frac = ((ratio - 1.0).abs() > self.clip_epsilon).float().mean()
+
+                        metrics['approx_kl'] += approx_kl.item()
+                        metrics['clip_fraction'] += clip_frac.item()
+                        n_batches += 1
+
+                        if self.target_kl is not None and approx_kl.item() > self.target_kl:
+                            break  # stop this epoch early
+
+                # Flush any partial accumulation group at end of epoch
+                if accum_count % accum_steps != 0:
                     nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
                     self.optimizer.step()
+                    self.optimizer.zero_grad()
 
                     with torch.no_grad():
                         approx_kl = ((ratio - 1) - ratio.log()).mean()
                         clip_frac = ((ratio - 1.0).abs() > self.clip_epsilon).float().mean()
 
-                    metrics['policy_loss'] += policy_loss.item()
-                    metrics['value_loss'] += value_loss.item()
-                    metrics['entropy_loss'] += entropy_loss.item()
-                    metrics['caps_loss'] += caps_loss.item()
                     metrics['approx_kl'] += approx_kl.item()
                     metrics['clip_fraction'] += clip_frac.item()
                     n_batches += 1
-
-                    if self.target_kl is not None and approx_kl.item() > self.target_kl:
-                        break  # stop this epoch early
 
                 if self.target_kl is not None and approx_kl.item() > self.target_kl:
                     break  # stop epoch loop
