@@ -91,8 +91,7 @@ ppo:
   hidden_sizes: [256, 256, 256]  # unused; kept for config compatibility
   network_type: lstm
   lstm_hidden_size: 256
-  seq_len: 32
-  grad_accumulation_steps: 2
+  seq_len: 16
   target_kl: 0.01
 
 # CAPS: temporal disabled (breaks bspline corner corrections), spatial retained
@@ -128,6 +127,12 @@ seed: 42
 #            gets policy reliably below 7mm.
 # - Run 106: grad_accumulation_steps=2 (seq_len=32 gives only 2 seqs/batch; accumulate 2 → 4 effective seqs
 #            per optimizer step, matching seq_len=16 quality without changing PPO update frequency).
+#            Result: bspline peaked 12.7mm in stage 2 then degraded to 21mm; jerk 4.2 m/s³ RMS (vs 0.7/0.8
+#            for Run 97 peak/final). Undershoot throughout bspline — LSTM learns miscalibrated corner
+#            pre-corrections on variable geometry. Conclusion: seq_len=32 actively hurts bspline generalisation.
+# - Run 107: seq_len reverted to 16. Two curriculum changes targeting corner undershoot:
+#            (1) min_curvature_radius tightened earlier: stages 2-4 now 0.09/0.07/0.07 (was 0.12/0.09/0.09)
+#            (2) bspline path weight increased in stages 2-4: 30%/45%/50% (was 15%/30%/35%)
 curriculum:
   enabled: true
   stages:
@@ -165,11 +170,11 @@ curriculum:
       w_ori: 0.6
       orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
-      path_weights: [0.55, 0.30, 0.15]
+      path_weights: [0.45, 0.25, 0.30]
       obs_noise_pos_std: 0.0
       obs_noise_vel_std: 0.0
       lookahead_noise_std: 0.0
-      min_curvature_radius: 0.12
+      min_curvature_radius: 0.09
       advance_threshold: 0.020
       max_steps: null
       min_steps_in_stage: 100000
@@ -180,11 +185,11 @@ curriculum:
       w_ori: 0.8
       orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
-      path_weights: [0.45, 0.25, 0.30]
+      path_weights: [0.35, 0.20, 0.45]
       obs_noise_pos_std: 0.0
       obs_noise_vel_std: 0.0
       lookahead_noise_std: 0.0
-      min_curvature_radius: 0.09
+      min_curvature_radius: 0.07
       advance_threshold: 0.06
       max_steps: null
       min_steps_in_stage: 100000
@@ -195,11 +200,11 @@ curriculum:
       w_ori: 0.9
       orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
-      path_weights: [0.40, 0.25, 0.35]
+      path_weights: [0.30, 0.20, 0.50]
       obs_noise_pos_std: 0.0
       obs_noise_vel_std: 0.0
       lookahead_noise_std: 0.0
-      min_curvature_radius: 0.09
+      min_curvature_radius: 0.07
       advance_threshold: 0.04
       max_steps: null
       min_steps_in_stage: 100000
