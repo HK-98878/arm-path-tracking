@@ -119,8 +119,10 @@ logging:
 
 seed: 42
 
-# Curriculum: 6-stage structure matching Run 97 (best result). Run 102 change vs Run 97:
-# final stage sig_pos 0.015 → 0.018 to reduce jerk drift. All intermediate gating removed.
+# Curriculum: 6-stage structure matching Run 97 (best result). Changes vs Run 97:
+# - Run 102: final stage sig_pos 0.015 → 0.018 to reduce jerk drift. All intermediate gating removed.
+# - Run 103: final stage pos_reward_type: exponential (stronger gradient below 7mm).
+# - Run 104: stage 1 min_steps_in_stage 100k → 200k (give fig-8 more consolidation before bspline).
 curriculum:
   enabled: true
   stages:
@@ -150,7 +152,7 @@ curriculum:
       lookahead_noise_std: 0.0
       advance_threshold: 0.018
       max_steps: 400000
-      min_steps_in_stage: 100000
+      min_steps_in_stage: 200000
 
     - speed: 0.10
       sig_pos: 0.04
