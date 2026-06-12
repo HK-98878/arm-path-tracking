@@ -91,7 +91,7 @@ ppo:
   hidden_sizes: [256, 256, 256]  # unused; kept for config compatibility
   network_type: lstm
   lstm_hidden_size: 256
-  seq_len: 16
+  seq_len: 32
   target_kl: 0.01
 
 # CAPS: temporal disabled (breaks bspline corner corrections), spatial retained
@@ -200,7 +200,7 @@ curriculum:
       min_steps_in_stage: 100000
 
     - speed: 0.20
-      sig_pos: 0.018
+      sig_pos: 0.015
       sig_ori: 0.12
       w_ori: 1.0
       orientation_modes: ['fixed']
@@ -210,7 +210,6 @@ curriculum:
       obs_noise_vel_std: 0.005
       lookahead_noise_std: 0.004
       min_curvature_radius: 0.07
-      pos_reward_type: exponential
       advance_threshold: null
       max_steps: 2000000
 
