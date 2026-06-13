@@ -143,6 +143,13 @@ seed: 42
 #            noise in stage 5 only. Hypothesis: policy never learned noise-robust representations
 #            because noise only appeared as a cold-start perturbation in the final stage. Clean/noisy
 #            jerk gap was ~15–20x in both Run 97 and 108, unchanged by capacity increase.
+#            Result: worse than Run 97 (circle 6.1mm, fig-8 7.3mm, bspline 10.5mm). Noise at stage 1
+#            compounded difficulty with fig-8 introduction; circle representations never fully formed.
+#            KL=0.0368 at 3M (vs Run 97 ~0.003) — noisy obs driving gradient instability in final stage.
+#            Flat plateau for last 300k steps; circle spike to 54.3mm at 2.98M.
+# - Run 110: noise start delayed to stage 2 (bspline introduction). Stages 0–1 clean, so circle/fig-8
+#            build representations undisturbed as in Run 97. Graduated noise from 2/3 → full across
+#            stages 2–4, full in stage 5. Noise magnitudes unchanged from Run 109.
 curriculum:
   enabled: true
   stages:
@@ -167,9 +174,9 @@ curriculum:
       orientation_modes: ['fixed']
       path_types: ['circle', 'figure8']
       path_weights: [0.7, 0.3]
-      obs_noise_pos_std: 0.001
-      obs_noise_vel_std: 0.002
-      lookahead_noise_std: 0.001
+      obs_noise_pos_std: 0.0
+      obs_noise_vel_std: 0.0
+      lookahead_noise_std: 0.0
       advance_threshold: 0.018
       max_steps: 400000
       min_steps_in_stage: 100000
