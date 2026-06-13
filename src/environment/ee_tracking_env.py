@@ -518,16 +518,13 @@ class EETrackingEnv(gym.Env):
         s_wrapped = self.s_current % self.path.total_length
 
         # Baseline linear command: P-control toward current path target, or path-tangent
-        # feedforward if P-control is disabled. During warmup, velocity feedforward is
-        # added to P-control so the arm tracks the moving target without accumulating lag
-        # (~40mm at 0.2 m/s with alpha=0.05 alone).
+        # feedforward if P-control is disabled. During warmup the path clock is frozen
+        # (s_ideal/s_current stay at 0), so the P-control target equals the arm's IK
+        # position and the arm stays stationary — no lag accumulates.
         if self.p_control_alpha > 0:
             target_pos = self.path.position(s_wrapped)
             ee_pos_now = self.data.xpos[self.ee_body_id]
             feedforward_linear = self.p_control_alpha * (target_pos - ee_pos_now)
-            if self.step_count < self.warmup_steps:
-                v_ref = self.path.velocity(s_wrapped)
-                feedforward_linear = feedforward_linear + v_ref * self.dt
         else:
             v_ref = self.path.velocity(s_wrapped)
             feedforward_linear = v_ref * self.dt
@@ -565,6 +562,12 @@ class EETrackingEnv(gym.Env):
         Note: s_ideal and s_current are tracked as unwrapped values (can exceed
         total_length for multiple laps). Only wrap when accessing path geometry.
         """
+        # During warmup the clock is frozen: arm stays at IK start position (s=0),
+        # path target stays at s=0, so P-control error ≈ 0 and no lag accumulates.
+        # RL takes over at step warmup_steps with the arm exactly on the path.
+        if self.step_count < self.warmup_steps:
+            return
+
         ee_pos = self.data.xpos[self.ee_body_id]
 
         # Check if path is reversed (negative speed)
