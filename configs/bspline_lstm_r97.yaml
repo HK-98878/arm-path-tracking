@@ -137,12 +137,6 @@ seed: 42
 #            disrupts circle/fig-8 foundation. Bspline mastery in Run 97 happened in stage 5, not earlier.
 # - Run 108: curriculum reverted to Run 97 exactly. Single structural change: lstm_hidden_size 256→384.
 #            Hypothesis: bspline generalisation limited by representational capacity for variable geometry.
-#            Result: worse position than Run 97, worse log jerk. Capacity not the bottleneck.
-# - Run 109: lstm_hidden_size reverted to 256. Graduated obs noise introduced from stage 1 onward
-#            (1/3 → 2/3 → full across stages 1–4, full from stage 4 onward) rather than cold-start
-#            noise in stage 5 only. Hypothesis: policy never learned noise-robust representations
-#            because noise only appeared as a cold-start perturbation in the final stage. Clean/noisy
-#            jerk gap was ~15–20x in both Run 97 and 108, unchanged by capacity increase.
 curriculum:
   enabled: true
   stages:
@@ -167,9 +161,9 @@ curriculum:
       orientation_modes: ['fixed']
       path_types: ['circle', 'figure8']
       path_weights: [0.7, 0.3]
-      obs_noise_pos_std: 0.001
-      obs_noise_vel_std: 0.002
-      lookahead_noise_std: 0.001
+      obs_noise_pos_std: 0.0
+      obs_noise_vel_std: 0.0
+      lookahead_noise_std: 0.0
       advance_threshold: 0.018
       max_steps: 400000
       min_steps_in_stage: 100000
@@ -181,9 +175,9 @@ curriculum:
       orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.55, 0.30, 0.15]
-      obs_noise_pos_std: 0.002
-      obs_noise_vel_std: 0.003
-      lookahead_noise_std: 0.002
+      obs_noise_pos_std: 0.0
+      obs_noise_vel_std: 0.0
+      lookahead_noise_std: 0.0
       min_curvature_radius: 0.12
       advance_threshold: 0.020
       max_steps: null
@@ -196,9 +190,9 @@ curriculum:
       orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.45, 0.25, 0.30]
-      obs_noise_pos_std: 0.002
-      obs_noise_vel_std: 0.004
-      lookahead_noise_std: 0.003
+      obs_noise_pos_std: 0.0
+      obs_noise_vel_std: 0.0
+      lookahead_noise_std: 0.0
       min_curvature_radius: 0.09
       advance_threshold: 0.06
       max_steps: null
@@ -211,9 +205,9 @@ curriculum:
       orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.40, 0.25, 0.35]
-      obs_noise_pos_std: 0.003
-      obs_noise_vel_std: 0.005
-      lookahead_noise_std: 0.004
+      obs_noise_pos_std: 0.0
+      obs_noise_vel_std: 0.0
+      lookahead_noise_std: 0.0
       min_curvature_radius: 0.09
       advance_threshold: 0.04
       max_steps: null
