@@ -61,7 +61,8 @@ class InteractiveViewer:
 
     def run_episode(self, env, agent, obs_rms, episode_recorder=None,
                     deterministic=True, feedforward_only=False,
-                    p_control=False, p_control_gain=1.0):
+                    p_control=False, p_control_gain=1.0,
+                    p_control_pos_noise_std=0.0):
         """Run episode with interactive viewer.
 
         Args:
@@ -80,6 +81,7 @@ class InteractiveViewer:
         obs, _ = env.reset()
         obs = obs_rms.normalize(obs)
         done = False
+        _pctrl_rng = np.random.default_rng() if p_control_pos_noise_std > 0 else None
 
         if episode_recorder:
             episode_recorder.reset()
@@ -104,7 +106,8 @@ class InteractiveViewer:
                 if feedforward_only:
                     action = np.zeros(env.action_space.shape[0])
                 elif p_control:
-                    error_world = target_pos - state.ee_pos_world
+                    ee_pos = state.ee_pos_world + _pctrl_rng.normal(0, p_control_pos_noise_std, 3) if _pctrl_rng is not None else state.ee_pos_world
+                    error_world = target_pos - ee_pos
                     error_ee = state.ee_rot_world.T @ error_world
                     action = np.zeros(env.action_space.shape[0], dtype=np.float32)
                     action[:3] = p_control_gain * error_ee / env.action_scale[:3]

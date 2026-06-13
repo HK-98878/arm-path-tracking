@@ -222,13 +222,15 @@ def create_agent(config, env, device='cpu'):
     return agent
 
 
-def compute_p_control_action(state, target_pos, action_scale, gain):
+def compute_p_control_action(state, target_pos, action_scale, gain, pos_noise_std=0.0, rng=None):
     """Proportional feedback: correct EE-to-path-point delta.
 
     Error is computed in world frame then rotated into EE frame to match
     the action convention (policy outputs are EE-frame residuals).
+    pos_noise_std: Gaussian noise on position measurement, matching obs_noise_pos_std seen by RL policy.
     """
-    error_world = target_pos - state.ee_pos_world       # (3,) world frame
+    ee_pos = state.ee_pos_world + rng.normal(0, pos_noise_std, 3) if pos_noise_std > 0 and rng is not None else state.ee_pos_world
+    error_world = target_pos - ee_pos                   # (3,) world frame
     error_ee = state.ee_rot_world.T @ error_world       # EE frame
     action = np.zeros(6, dtype=np.float32)
     action[:3] = gain * error_ee / action_scale[:3]
@@ -237,7 +239,8 @@ def compute_p_control_action(state, target_pos, action_scale, gain):
 
 def run_episode(env, agent, obs_rms, video_recorder=None,
                 episode_recorder=None, deterministic=True,
-                feedforward_only=False, p_control=False, p_control_gain=1.0):
+                feedforward_only=False, p_control=False, p_control_gain=1.0,
+                p_control_pos_noise_std=0.0):
     """Run single episode with optional recording.
 
     Returns:
@@ -248,6 +251,7 @@ def run_episode(env, agent, obs_rms, video_recorder=None,
         agent.reset_hidden_state()
     obs = obs_rms.normalize(obs)
     done = False
+    _pctrl_rng = np.random.default_rng() if p_control_pos_noise_std > 0 else None
 
     if episode_recorder:
         episode_recorder.reset()
@@ -264,7 +268,8 @@ def run_episode(env, agent, obs_rms, video_recorder=None,
             action = np.zeros(env.action_space.shape[0])
         elif p_control:
             action = compute_p_control_action(
-                state, target_pos, env.action_scale, p_control_gain
+                state, target_pos, env.action_scale, p_control_gain,
+                pos_noise_std=p_control_pos_noise_std, rng=_pctrl_rng,
             )
         else:
             action, _, _ = agent.select_action(obs, deterministic=deterministic)
@@ -458,11 +463,13 @@ def main():
         episode_recorder = EpisodeRecorder() if (args.save_data or args.save_plots or args.mode == 'plot') else None
 
         # Run episode
+        pctrl_pos_noise = obs_noise_config.get('obs_noise_pos_std', 0.0) if (args.p_control and obs_noise_config) else 0.0
         run_kwargs = dict(
             deterministic=args.deterministic,
             feedforward_only=args.feedforward_only,
             p_control=args.p_control,
             p_control_gain=args.p_control_gain,
+            p_control_pos_noise_std=pctrl_pos_noise,
         )
         if args.mode == 'viewer':
             # Interactive viewer mode
