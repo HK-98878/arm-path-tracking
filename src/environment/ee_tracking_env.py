@@ -518,13 +518,16 @@ class EETrackingEnv(gym.Env):
         s_wrapped = self.s_current % self.path.total_length
 
         # Baseline linear command: P-control toward current path target, or path-tangent
-        # feedforward if P-control is disabled. The two modes are mutually exclusive —
-        # P-control at alpha≥0.05 already provides sufficient startup authority and
-        # on-path tracking without the tangent feedforward.
+        # feedforward if P-control is disabled. During warmup, velocity feedforward is
+        # added to P-control so the arm tracks the moving target without accumulating lag
+        # (~40mm at 0.2 m/s with alpha=0.05 alone).
         if self.p_control_alpha > 0:
             target_pos = self.path.position(s_wrapped)
             ee_pos_now = self.data.xpos[self.ee_body_id]
             feedforward_linear = self.p_control_alpha * (target_pos - ee_pos_now)
+            if self.step_count < self.warmup_steps:
+                v_ref = self.path.velocity(s_wrapped)
+                feedforward_linear = feedforward_linear + v_ref * self.dt
         else:
             v_ref = self.path.velocity(s_wrapped)
             feedforward_linear = v_ref * self.dt
