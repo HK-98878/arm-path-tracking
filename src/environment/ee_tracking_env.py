@@ -356,8 +356,8 @@ class EETrackingEnv(gym.Env):
         Returns:
             Tuple of (observation, reward, terminated, truncated, info)
         """
-        # Zero RL residual during warmup — P-control feedforward still applies.
-        # LSTM runs forward via select_action (h-state builds from clean trajectory)
+        # Zero RL residual during warmup — P-control (ramped clock) still applies.
+        # LSTM runs forward via select_action (h builds from tracking experience)
         # but its output doesn't affect the arm until warmup_steps have elapsed.
         if self.step_count < self.warmup_steps:
             action = np.zeros(action.shape, dtype=action.dtype)
@@ -518,9 +518,9 @@ class EETrackingEnv(gym.Env):
         s_wrapped = self.s_current % self.path.total_length
 
         # Baseline linear command: P-control toward current path target, or path-tangent
-        # feedforward if P-control is disabled. During warmup the path clock is frozen
-        # (s_ideal/s_current stay at 0), so the P-control target equals the arm's IK
-        # position and the arm stays stationary — no lag accumulates.
+        # feedforward if P-control is disabled. During warmup the path clock ramps from
+        # 0→full speed, so the P-control target advances slowly and the arm gently
+        # accelerates to tracking speed before RL takes over.
         if self.p_control_alpha > 0:
             target_pos = self.path.position(s_wrapped)
             ee_pos_now = self.data.xpos[self.ee_body_id]
@@ -562,27 +562,28 @@ class EETrackingEnv(gym.Env):
         Note: s_ideal and s_current are tracked as unwrapped values (can exceed
         total_length for multiple laps). Only wrap when accessing path geometry.
         """
-        # During warmup the clock is frozen: arm stays at IK start position (s=0),
-        # path target stays at s=0, so P-control error ≈ 0 and no lag accumulates.
-        # RL takes over at step warmup_steps with the arm exactly on the path.
-        if self.step_count < self.warmup_steps:
-            return
-
         ee_pos = self.data.xpos[self.ee_body_id]
 
         # Check if path is reversed (negative speed)
         is_reversed = self.path.speed < 0
 
-        # Advance ideal position at constant path speed (unwrapped)
-        # Use signed speed for direction, magnitude for rate
+        # Ramp path clock from 0→full speed during warmup.
+        # ramp_frac=0 at step 0 (frozen), ramp_frac=1 at step warmup_steps (full speed).
+        # This gives the LSTM tracking experience and a smooth velocity transition:
+        # the arm is already moving at tracking speed when RL takes over, eliminating
+        # the velocity step that a hard freeze→unfreeze creates. For close IK starts the
+        # arm gently accelerates throughout warmup rather than sitting idle then lurching.
+        ramp_frac = (self.step_count / self.warmup_steps) if self.step_count < self.warmup_steps else 1.0
+
+        # Advance ideal position at constant path speed (unwrapped), scaled by ramp.
         s_ideal_wrapped = self.s_ideal % self.path.total_length
         _path_closed = getattr(self.path, 'closed', True)
         s_ideal_for_vel = s_ideal_wrapped if _path_closed else min(self.s_ideal, self.path.total_length)
         speed_magnitude = np.linalg.norm(self.path.velocity(s_ideal_for_vel))
         if is_reversed:
-            self.s_ideal = self.s_ideal - speed_magnitude * self.dt
+            self.s_ideal = self.s_ideal - ramp_frac * speed_magnitude * self.dt
         else:
-            self.s_ideal = self.s_ideal + speed_magnitude * self.dt
+            self.s_ideal = self.s_ideal + ramp_frac * speed_magnitude * self.dt
 
         # Nearest-point search (allows catching up when behind)
         backward_allowance = 0.0
