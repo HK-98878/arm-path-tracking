@@ -356,11 +356,13 @@ class EETrackingEnv(gym.Env):
         Returns:
             Tuple of (observation, reward, terminated, truncated, info)
         """
-        # Zero RL residual during warmup — P-control (ramped clock) still applies.
-        # LSTM runs forward via select_action (h builds from tracking experience)
-        # but its output doesn't affect the arm until warmup_steps have elapsed.
-        if self.step_count < self.warmup_steps:
-            action = np.zeros(action.shape, dtype=action.dtype)
+        # Blend RL residual in linearly during warmup (0→1 over warmup_steps).
+        # LSTM runs forward and its output is applied at fractional authority,
+        # reaching full control exactly at warmup_steps with no hard transition.
+        # Path clock ramps simultaneously, so RL learns to compensate for
+        # P-control lag on the accelerating reference rather than inheriting it.
+        if self.warmup_steps > 0 and self.step_count < self.warmup_steps:
+            action = action * (self.step_count / self.warmup_steps)
 
         # Convert action to target EE twist (residual-feedforward)
         dx_ee_world = self._action_to_ee_twist(action)
