@@ -120,10 +120,23 @@ def get_noise_config(config):
     return None
 
 
+def _get_final_stage_params(config):
+    """Return final curriculum stage as a dict, or {} if curriculum is not enabled."""
+    curriculum = getattr(config, 'curriculum', None)
+    if curriculum is None or not getattr(curriculum, 'enabled', False):
+        return {}
+    stages = getattr(curriculum, 'stages', [])
+    return dict(stages[-1]) if stages else {}
+
+
 def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='circle',
              fixed_start=False, bspline_seed=None, obs_noise_config=None):
     """Create environment from config."""
-    speed = config.path.speed
+    # Use the final curriculum stage speed so the visualizer matches training-eval conditions.
+    # config.path.speed is the stage-0 base (0.1 m/s); the trained policy runs at stage-5
+    # speed (0.2 m/s). Running at the wrong speed produces a 2x mismatch in dynamics.
+    final_stage = _get_final_stage_params(config)
+    speed = final_stage.get('speed', config.path.speed)
     if reverse_path:
         speed = -speed
         print(f"  Reversed path direction: speed = {speed}")
@@ -183,8 +196,12 @@ def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='cir
     if path_type == 'bspline':
         bspline_cfg_obj = getattr(config, 'bspline_path', None)
         bspline_cfg = bspline_cfg_obj.to_dict() if bspline_cfg_obj is not None else {}
+        bspline_override = {}
+        if 'min_curvature_radius' in final_stage:
+            bspline_override['min_curvature_radius'] = final_stage['min_curvature_radius']
         env._bspline_config = {
             **bspline_cfg,
+            **bspline_override,
             'center': np.array(config.path.center),
             'speed': speed,
         }
