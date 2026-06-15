@@ -233,6 +233,10 @@ class EETrackingEnv(gym.Env):
                     min_curvature_radius_override=self._bspline_config.get('min_curvature_radius'),
                     orientation_modes=self._bspline_config.get('orientation_modes'),
                 )
+                # Set orientation mode before IK so the arm initialises to the
+                # correct target orientation (critical for random_fixed mode).
+                if hasattr(self.path, 'reset_orientation_mode'):
+                    self.path.reset_orientation_mode(self.np_random)
                 if _is_open_config:
                     _cached_ik = self._solve_ik(
                         self.path.position(0.0),
@@ -240,9 +244,8 @@ class EETrackingEnv(gym.Env):
                     )
                     if _cached_ik is not None:
                         break
-
-        # Select orientation mode for this episode (if path supports it)
-        if hasattr(self.path, 'reset_orientation_mode'):
+        elif hasattr(self.path, 'reset_orientation_mode'):
+            # Non-bspline paths (circle, fig-8): select orientation mode here.
             self.path.reset_orientation_mode(self.np_random)
 
         # Reset MuJoCo simulation
