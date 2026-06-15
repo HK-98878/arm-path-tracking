@@ -117,7 +117,7 @@ logging:
   tensorboard: true
   save_video: false
 
-seed: 42
+seed: 7
 
 # Curriculum: 6-stage structure matching Run 97 (best result). Changes vs Run 97:
 # - Run 104: stage 1 min_steps_in_stage 100k → 200k (give fig-8 more consolidation before bspline).
@@ -164,7 +164,7 @@ curriculum:
       obs_noise_vel_std: 0.0
       lookahead_noise_std: 0.0
       advance_threshold: 0.015
-      max_steps: 300000
+      max_steps: 150000
       min_steps_in_stage: 30000
 
     - speed: 0.10
