@@ -153,6 +153,8 @@ def create_bspline_path(
         violation_magnitude=bspline_config.get('violation_magnitude', 0.0),
         n_arc_samples=bspline_config.get('n_arc_samples', 1000),
         orientation_modes=modes,
+        rock_amplitude=bspline_config.get('rock_amplitude', 0.175),
+        n_oscillations=bspline_config.get('n_oscillations', 2),
         closed=bspline_config.get('closed', False),
     )
 

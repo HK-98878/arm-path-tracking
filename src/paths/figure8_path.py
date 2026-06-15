@@ -62,6 +62,7 @@ class Figure8Path(Path):
         # Orientation variation parameters
         self._orientation_modes = orientation_modes if orientation_modes else ['fixed']
         self._rock_amplitude = rock_amplitude
+        self._random_fixed_quat = None
         self._n_oscillations = n_oscillations
         self._orientation_mode = self._orientation_modes[0]
 
@@ -178,14 +179,19 @@ class Figure8Path(Path):
         return self.half_width
 
     def reset_orientation_mode(self, rng: np.random.Generator = None):
-        """Select a random orientation mode for this episode.
-
-        Args:
-            rng: NumPy random generator (for reproducibility)
-        """
+        """Select a random orientation mode for this episode."""
         if rng is None:
             rng = np.random.default_rng()
         self._orientation_mode = rng.choice(self._orientation_modes)
+        if self._orientation_mode == 'random_fixed':
+            q_base = np.array([0.0, 1.0, 0.0, 0.0])
+            theta_x = rng.uniform(-self._rock_amplitude, self._rock_amplitude)
+            theta_y = rng.uniform(-self._rock_amplitude, self._rock_amplitude)
+            q_x = rotvec_to_quat(theta_x * np.array([1.0, 0.0, 0.0]))
+            q_y = rotvec_to_quat(theta_y * np.array([0.0, 1.0, 0.0]))
+            self._random_fixed_quat = quat_multiply(q_y, quat_multiply(q_x, q_base))
+        else:
+            self._random_fixed_quat = None
 
     def position(self, s: float) -> np.ndarray:
         """Position at arc length s.
@@ -258,24 +264,21 @@ class Figure8Path(Path):
 
         if self._orientation_mode == 'fixed':
             return q_base
+        if self._orientation_mode == 'random_fixed':
+            return self._random_fixed_quat.copy() if self._random_fixed_quat is not None else q_base
 
         # Compute rock angle: A * sin(2*pi*n*s/L)
         phase = 2 * np.pi * self._n_oscillations * s / self.total_length
         theta = self._rock_amplitude * np.sin(phase)
 
-        # Determine rock axis (world frame)
         if self._orientation_mode == 'rock_x':
             axis = np.array([1.0, 0.0, 0.0])
         elif self._orientation_mode == 'rock_y':
             axis = np.array([0.0, 1.0, 0.0])
         else:
-            return q_base  # Unknown mode, fallback to fixed
+            return q_base
 
-        # Rock rotation as quaternion
-        q_rock = rotvec_to_quat(theta * axis)
-
-        # Compose: rock (world frame) then base orientation
-        return quat_multiply(q_rock, q_base)
+        return quat_multiply(rotvec_to_quat(theta * axis), q_base)
 
     def angular_velocity(self, s: float) -> np.ndarray:
         """Angular velocity at arc length s.
@@ -290,7 +293,7 @@ class Figure8Path(Path):
             For fixed mode, returns zero.
             For rocking modes, returns d(theta)/dt * axis.
         """
-        if self._orientation_mode == 'fixed':
+        if self._orientation_mode in ('fixed', 'random_fixed'):
             return np.zeros(3)
 
         # d(theta)/ds = A * (2*pi*n/L) * cos(phase)

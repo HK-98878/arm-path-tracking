@@ -215,7 +215,7 @@ curriculum:
       sig_pos: 0.020
       sig_ori: 0.16
       w_ori: 0.9
-      orientation_modes: ['fixed']
+      orientation_modes: ['fixed', 'rock_x', 'rock_y', 'random_fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.40, 0.25, 0.35]
       obs_noise_pos_std: 0.003
@@ -230,7 +230,7 @@ curriculum:
       sig_pos: 0.015
       sig_ori: 0.12
       w_ori: 1.0
-      orientation_modes: ['fixed']
+      orientation_modes: ['rock_x', 'rock_y', 'random_fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.25, 0.25, 0.50]
       obs_noise_pos_std: 0.003
