@@ -241,6 +241,12 @@ curriculum:
       max_steps: 2000000
 
   consecutive_evals: 3
-  warmup_after_transition: 10000
+  # warmup_after_transition/ent_warmup_multiplier extended from 10000/2.0 (Run 117): the
+  # post-transition entropy boost decayed back to baseline within the first 10% of stage 4
+  # (370k-380k), well before the orientation action<->error correlation (checked on 400k/500k/
+  # 5M checkpoints, all ~-0.1 to +0.4, no stronger early than late) showed any sign of forming.
+  # Longer + stronger boost gives exploration more time to discover the corrective relationship
+  # before ent_coef decays it away.
+  warmup_after_transition: 40000
   lr_warmup_multiplier: 2.0
-  ent_warmup_multiplier: 2.0
+  ent_warmup_multiplier: 3.0
