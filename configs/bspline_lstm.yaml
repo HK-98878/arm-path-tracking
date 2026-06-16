@@ -150,6 +150,20 @@ seed: 7
 # - Run 110: noise start delayed to stage 2 (bspline introduction). Stages 0–1 clean, so circle/fig-8
 #            build representations undisturbed as in Run 97. Graduated noise from 2/3 → full across
 #            stages 2–4, full in stage 5. Noise magnitudes unchanged from Run 109.
+# Run 118 -> 119: orientation-discovery diagnostic (post-118 correlation check, see notes)
+# showed corr(ori_error, action) still |r|<0.3, sign-inconsistent across all 3 axes at 2.4M
+# steps -- identical signature to the Run 117 failure despite 118's 4x longer post-transition
+# exploration window. Two independent runs now rule out "needs more exploration time."
+#
+# New stage 1 below isolates orientation discovery on its own: circle-only, speed/sig_pos left
+# at stage 0's trivial-position settings so the LSTM has full spare capacity to find the
+# error->action mapping with no fig8/bspline/speed-ramp/noise confound. Once introduced,
+# orientation is carried forward continuously (mixed modes every stage from here on) rather
+# than being switched back to 'fixed' and re-introduced later -- avoids re-running the same
+# discovery problem in a harder context. The original protective rationale for bspline
+# introduction (avoid competing with position-learning on the hardest path) is preserved by
+# biasing the mode list towards 'fixed' (3:1:1:1) for stage 3's bspline introduction only,
+# rather than dropping orientation variation entirely.
 curriculum:
   enabled: true
   stages:
@@ -167,11 +181,27 @@ curriculum:
       max_steps: 150000
       min_steps_in_stage: 30000
 
+    # NEW: orientation-discovery bootstrap. Speed/sig_pos unchanged from stage 0 (position is
+    # already solved here) so reward budget and exploration are free to focus on orientation.
+    - speed: 0.05
+      sig_pos: 0.05
+      sig_ori: 0.35
+      w_ori: 0.5
+      orientation_modes: ['fixed', 'rock_x', 'rock_y', 'random_fixed']
+      path_types: ['circle']
+      path_weights: [1.0]
+      obs_noise_pos_std: 0.0
+      obs_noise_vel_std: 0.0
+      lookahead_noise_std: 0.0
+      advance_threshold: 0.02
+      max_steps: 350000
+      min_steps_in_stage: 150000
+
     - speed: 0.10
       sig_pos: 0.04
       sig_ori: 0.25
-      w_ori: 0.5
-      orientation_modes: ['fixed']
+      w_ori: 0.6
+      orientation_modes: ['fixed', 'rock_x', 'rock_y', 'random_fixed']
       path_types: ['circle', 'figure8']
       path_weights: [0.7, 0.3]
       obs_noise_pos_std: 0.0
@@ -181,11 +211,14 @@ curriculum:
       max_steps: 400000
       min_steps_in_stage: 100000
 
+    # bspline introduced: orientation mode list biased 3:1:1:1 towards 'fixed' so position
+    # learning on the hardest path still gets a majority-fixed signal, while the
+    # already-established orientation skill is maintained (not dropped) via continued exposure.
     - speed: 0.10
       sig_pos: 0.04
-      sig_ori: 0.25
+      sig_ori: 0.20
       w_ori: 0.6
-      orientation_modes: ['fixed']
+      orientation_modes: ['fixed', 'fixed', 'fixed', 'rock_x', 'rock_y', 'random_fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.55, 0.30, 0.15]
       obs_noise_pos_std: 0.002
@@ -198,9 +231,9 @@ curriculum:
 
     - speed: 0.15
       sig_pos: 0.030
-      sig_ori: 0.20
+      sig_ori: 0.16
       w_ori: 0.8
-      orientation_modes: ['fixed']
+      orientation_modes: ['fixed', 'rock_x', 'rock_y', 'random_fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.45, 0.25, 0.30]
       obs_noise_pos_std: 0.002
@@ -213,7 +246,7 @@ curriculum:
 
     - speed: 0.15
       sig_pos: 0.020
-      sig_ori: 0.16
+      sig_ori: 0.14
       w_ori: 0.9
       orientation_modes: ['fixed', 'rock_x', 'rock_y', 'random_fixed']
       path_types: ['circle', 'figure8', 'bspline']
