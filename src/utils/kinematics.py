@@ -127,8 +127,13 @@ def rotation_error_rotvec(q_current: np.ndarray, q_target: np.ndarray) -> np.nda
     """
     r_current = R.from_quat(q_current)
     r_target = R.from_quat(q_target)
-    # Error rotation: R_error = R_current^{-1} * R_target
-    r_error = r_current.inv() * r_target
+    # World-frame error: R_target * R_current^{-1} gives the rotation axis in world
+    # coordinates. This is the angular velocity direction to apply in world frame to
+    # rotate the current orientation toward the target.
+    # (Note: R_current^{-1} * R_target gives the same angle but in the body/EE frame,
+    # which is wrong when the result is used as a world-frame angular command or
+    # transformed to EE frame via R_ew @ result.)
+    r_error = r_target * r_current.inv()
     return r_error.as_rotvec()
 
 

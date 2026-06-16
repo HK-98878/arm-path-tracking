@@ -262,6 +262,7 @@ def make_env(config, bidirectional=False, include_orientation=False, path_type='
         randomize_start_position=getattr(config.env, 'randomize_start_position', False),
         start_position_noise=getattr(config.env, 'start_position_noise', 0.06),
         p_control_alpha=getattr(config.env, 'p_control_alpha', 0.0),
+        p_ori_alpha=getattr(config.env, 'p_ori_alpha', 0.0),
         warmup_steps=getattr(config.env, 'warmup_steps', 0),
     )
 
@@ -374,6 +375,7 @@ def make_env_with_stage(config, stage_params, bidirectional=False, path_type_ove
         include_ee_accel=include_ee_accel,
         obs_noise_config=obs_noise_config if has_noise else None,
         p_control_alpha=getattr(config.env, 'p_control_alpha', 0.0),
+        p_ori_alpha=getattr(config.env, 'p_ori_alpha', 0.0),
         warmup_steps=getattr(config.env, 'warmup_steps', 0),
     )
 

@@ -34,7 +34,7 @@ from src.rl.ppo import PPO
 from src.utils.config import load_config
 from src.utils.normalization import RunningMeanStd
 from src.utils.metrics import compute_jitter_metrics, compute_tracking_error_metrics, compute_ee_jerk_metrics
-from src.utils.kinematics import geodesic_angle
+from src.utils.kinematics import geodesic_angle, rotation_error_rotvec
 from src.visualization.episode_recorder import EpisodeRecorder
 from src.visualization.mujoco_renderer import VideoRecorder, InteractiveViewer
 from src.visualization.trajectory_plotter import TrajectoryPlotter
@@ -72,6 +72,9 @@ def parse_args():
                        help='Use proportional EE-to-target feedback (no RL policy)')
     parser.add_argument('--p-control-gain', type=float, default=1.0,
                        help='P-controller gain (default 1.0 = correct full error per step)')
+    parser.add_argument('--p-control-ori-gain', type=float, default=0.0,
+                       help='Orientation P-controller gain (fraction of angular error closed per step). '
+                            '0.0 = no orientation control (default). Only active with --p-control.')
     parser.add_argument('--reverse-path', action='store_true',
                        help='Reverse path direction (negative speed)')
     parser.add_argument('--fixed-start', action='store_true',
@@ -208,6 +211,7 @@ def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='cir
         randomize_start_position=False if fixed_start else getattr(config.env, 'randomize_start_position', False),
         start_position_noise=getattr(config.env, 'start_position_noise', 0.06),
         p_control_alpha=getattr(config.env, 'p_control_alpha', 0.0),
+        p_ori_alpha=getattr(config.env, 'p_ori_alpha', 0.0),
         warmup_steps=getattr(config.env, 'warmup_steps', 0),
         obs_noise_config=obs_noise_config,
     )
@@ -261,25 +265,33 @@ def create_agent(config, env, device='cpu'):
     return agent
 
 
-def compute_p_control_action(state, target_pos, action_scale, gain, pos_noise_std=0.0, rng=None):
+def compute_p_control_action(state, target_pos, action_scale, gain,
+                             pos_noise_std=0.0, rng=None,
+                             target_quat=None, ori_gain=0.0):
     """Proportional feedback: correct EE-to-path-point delta.
 
     Error is computed in world frame then rotated into EE frame to match
     the action convention (policy outputs are EE-frame residuals).
     pos_noise_std: Gaussian noise on position measurement, matching obs_noise_pos_std seen by RL policy.
+    target_quat: Target orientation quaternion [x,y,z,w]; if provided and ori_gain>0, adds angular P-control.
+    ori_gain: Proportional gain for orientation correction (fraction of error closed per step).
     """
     ee_pos = state.ee_pos_world + rng.normal(0, pos_noise_std, 3) if pos_noise_std > 0 and rng is not None else state.ee_pos_world
     error_world = target_pos - ee_pos                   # (3,) world frame
     error_ee = state.ee_rot_world.T @ error_world       # EE frame
     action = np.zeros(6, dtype=np.float32)
     action[:3] = gain * error_ee / action_scale[:3]
+    if target_quat is not None and ori_gain > 0.0:
+        ori_err_world = rotation_error_rotvec(state.ee_quat_world, target_quat)  # world frame
+        ori_err_ee = state.ee_rot_world.T @ ori_err_world                        # EE frame
+        action[3:] = ori_gain * ori_err_ee / action_scale[3:]
     return np.clip(action, -1.0, 1.0)
 
 
 def run_episode(env, agent, obs_rms, video_recorder=None,
                 episode_recorder=None, deterministic=True,
                 feedforward_only=False, p_control=False, p_control_gain=1.0,
-                p_control_pos_noise_std=0.0):
+                p_control_pos_noise_std=0.0, p_control_ori_gain=0.0):
     """Run single episode with optional recording.
 
     Returns:
@@ -316,6 +328,7 @@ def run_episode(env, agent, obs_rms, video_recorder=None,
             action = compute_p_control_action(
                 state, target_pos, env.action_scale, p_control_gain,
                 pos_noise_std=p_control_pos_noise_std, rng=_pctrl_rng,
+                target_quat=target_quat, ori_gain=p_control_ori_gain,
             )
         else:
             action, _, _ = agent.select_action(obs, deterministic=deterministic)
@@ -538,6 +551,7 @@ def main():
             p_control=args.p_control,
             p_control_gain=args.p_control_gain,
             p_control_pos_noise_std=pctrl_pos_noise,
+            p_control_ori_gain=args.p_control_ori_gain,
         )
         if args.mode == 'viewer':
             # Interactive viewer mode

@@ -14,6 +14,7 @@ from ..paths.base_path import Path
 from ..paths.bspline_path import BSplinePath
 from ..control.dls_jacobian import DLSController, compute_jacobian_mujoco
 from ..rewards.tracking_reward import TrackingReward
+from scipy.spatial.transform import Rotation as ScipyR
 from ..utils.kinematics import quat_to_matrix, rotation_error_rotvec
 
 
@@ -51,6 +52,7 @@ class EETrackingEnv(gym.Env):
         include_ee_accel: bool = False,
         obs_noise_config: Optional[dict] = None,
         p_control_alpha: float = 0.0,
+        p_ori_alpha: float = 0.0,
         warmup_steps: int = 0,
     ):
         """Initialize environment.
@@ -159,6 +161,7 @@ class EETrackingEnv(gym.Env):
         self.prev_ee_vel = np.zeros(3, dtype=np.float64)
 
         self.p_control_alpha = p_control_alpha
+        self.p_ori_alpha = p_ori_alpha
         self.warmup_steps = warmup_steps
 
         # Bspline config: set from make_env_with_stage() for per-episode regeneration
@@ -534,10 +537,13 @@ class EETrackingEnv(gym.Env):
             v_ref = self.path.velocity(s_wrapped)
             feedforward_linear = v_ref * self.dt
 
-        # Angular feedforward: path angular velocity if orientation control enabled
+        # Angular feedforward: path angular velocity + optional orientation P-control
         if self.include_orientation:
-            omega_ref = self.path.angular_velocity(s_wrapped)
-            feedforward_angular = omega_ref * self.dt
+            feedforward_angular = self.path.angular_velocity(s_wrapped) * self.dt
+            if self.p_ori_alpha > 0:
+                q_target = self.path.orientation(s_wrapped)
+                ori_err_world = rotation_error_rotvec(ee_quat, q_target)
+                feedforward_angular = feedforward_angular + self.p_ori_alpha * ori_err_world
         else:
             feedforward_angular = np.zeros(3)
 
