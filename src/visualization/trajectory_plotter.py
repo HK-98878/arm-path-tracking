@@ -82,37 +82,60 @@ class TrajectoryPlotter:
 
         return fig
 
-    def plot_error_timeline(self, position_errors, dt, save_path=None, show=False):
-        """Plot position error over time.
+    def plot_error_timeline(self, position_errors, dt, orientation_errors=None,
+                            save_path=None, show=False):
+        """Plot position (and optionally orientation) error over time.
 
         Args:
             position_errors: (T,) array of position errors in meters
             dt: Timestep in seconds
+            orientation_errors: Optional (T,) array of geodesic orientation errors in radians
             save_path: Optional path to save figure
             show: Whether to display interactively
         """
-        fig, ax = plt.subplots(figsize=(10, 4))
+        has_orientation = orientation_errors is not None and len(orientation_errors) > 0
+
+        if has_orientation:
+            fig, (ax_pos, ax_ori) = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+        else:
+            fig, ax_pos = plt.subplots(figsize=(10, 4))
 
         times = np.arange(len(position_errors)) * dt
         errors_mm = position_errors * 1000  # Convert to mm
 
-        ax.plot(times, errors_mm, linewidth=1.5, label='Position Error')
+        ax_pos.plot(times, errors_mm, linewidth=1.5, label='Position Error', color='tab:blue')
 
         # Statistics
         mean_err = np.mean(errors_mm)
         max_err = np.max(errors_mm)
-        rms_err = np.sqrt(np.mean(errors_mm ** 2))
 
-        ax.axhline(mean_err, color='orange', linestyle='--',
+        ax_pos.axhline(mean_err, color='orange', linestyle='--',
                   label=f'Mean: {mean_err:.2f} mm')
-        ax.axhline(max_err, color='red', linestyle=':',
+        ax_pos.axhline(max_err, color='red', linestyle=':',
                   label=f'Max: {max_err:.2f} mm')
 
-        ax.set_xlabel('Time (s)', fontsize=12)
-        ax.set_ylabel('Position Error (mm)', fontsize=12)
-        ax.set_title('Tracking Error Over Time', fontsize=14)
-        ax.legend()
-        ax.grid(True, alpha=0.3)
+        ax_pos.set_ylabel('Position Error (mm)', fontsize=12)
+        ax_pos.set_title('Tracking Error Over Time', fontsize=14)
+        ax_pos.legend()
+        ax_pos.grid(True, alpha=0.3)
+
+        if has_orientation:
+            errors_deg = np.degrees(orientation_errors)
+            mean_ori = np.mean(errors_deg)
+            max_ori = np.max(errors_deg)
+
+            ax_ori.plot(times, errors_deg, linewidth=1.5, label='Orientation Error', color='tab:green')
+            ax_ori.axhline(mean_ori, color='orange', linestyle='--',
+                      label=f'Mean: {mean_ori:.2f} deg')
+            ax_ori.axhline(max_ori, color='red', linestyle=':',
+                      label=f'Max: {max_ori:.2f} deg')
+
+            ax_ori.set_xlabel('Time (s)', fontsize=12)
+            ax_ori.set_ylabel('Orientation Error (deg)', fontsize=12)
+            ax_ori.legend()
+            ax_ori.grid(True, alpha=0.3)
+        else:
+            ax_pos.set_xlabel('Time (s)', fontsize=12)
 
         plt.tight_layout()
 

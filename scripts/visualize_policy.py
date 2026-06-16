@@ -34,6 +34,7 @@ from src.rl.ppo import PPO
 from src.utils.config import load_config
 from src.utils.normalization import RunningMeanStd
 from src.utils.metrics import compute_jitter_metrics, compute_tracking_error_metrics, compute_ee_jerk_metrics
+from src.utils.kinematics import geodesic_angle
 from src.visualization.episode_recorder import EpisodeRecorder
 from src.visualization.mujoco_renderer import VideoRecorder, InteractiveViewer
 from src.visualization.trajectory_plotter import TrajectoryPlotter
@@ -83,6 +84,11 @@ def parse_args():
     parser.add_argument('--noise', action='store_true',
                        help='Inject observation noise (from final curriculum stage config). '
                             'Errors if no noise is configured.')
+    parser.add_argument('--orientation-mode', type=str, default=None,
+                       choices=['fixed', 'rock_x', 'rock_y', 'random_fixed'],
+                       help='Force a single orientation mode for the episode (overrides the '
+                            'curriculum mix). Omit to sample from the final curriculum stage\'s '
+                            'orientation_modes each episode, matching training.')
     parser.add_argument('--render-width', type=int, default=640,
                        help='Render width')
     parser.add_argument('--render-height', type=int, default=480,
@@ -130,7 +136,8 @@ def _get_final_stage_params(config):
 
 
 def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='circle',
-             fixed_start=False, bspline_seed=None, obs_noise_config=None):
+             fixed_start=False, bspline_seed=None, obs_noise_config=None,
+             orientation_mode_override=None):
     """Create environment from config."""
     # Use the final curriculum stage speed so the visualizer matches training-eval conditions.
     # config.path.speed is the stage-0 base (0.1 m/s); the trained policy runs at stage-5
@@ -141,8 +148,19 @@ def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='cir
         speed = -speed
         print(f"  Reversed path direction: speed = {speed}")
 
-    # Get orientation variation parameters
-    orientation_modes = getattr(config.path, 'orientation_modes', ['fixed'])
+    # Get orientation variation parameters. Mirror the speed override above: the final
+    # curriculum stage's orientation_modes (e.g. ['rock_x', 'rock_y', 'random_fixed']) is
+    # what the trained policy actually saw, while config.path.orientation_modes is just the
+    # stage-0 default ('fixed'). Using the latter would silently visualize fixed-orientation
+    # episodes even for policies trained with orientation variation.
+    orientation_modes = final_stage.get(
+        'orientation_modes', getattr(config.path, 'orientation_modes', ['fixed'])
+    )
+    if orientation_mode_override is not None:
+        orientation_modes = [orientation_mode_override]
+        print(f"  Orientation mode forced: {orientation_mode_override}")
+    else:
+        print(f"  Orientation modes: {orientation_modes}")
     rock_amplitude = getattr(config.path, 'rock_amplitude', 0.175)
     n_oscillations = getattr(config.path, 'n_oscillations', 2)
 
@@ -158,6 +176,7 @@ def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='cir
             speed=speed,
             bspline_config=bspline_cfg,
             rng=np.random.default_rng(seed_for_init),
+            orientation_modes=orientation_modes,
         )
         print(f"  Path: bspline (seed={'fixed:' + str(bspline_seed) if bspline_seed is not None else 'random per episode'})")
     else:
@@ -204,6 +223,9 @@ def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='cir
             **bspline_override,
             'center': np.array(config.path.center),
             'speed': speed,
+            'orientation_modes': orientation_modes,
+            'rock_amplitude': rock_amplitude,
+            'n_oscillations': n_oscillations,
         }
         # Pin the RNG seed so every episode generates the same spline sequence,
         # or leave it unset for a fresh random spline each episode.
@@ -270,6 +292,11 @@ def run_episode(env, agent, obs_rms, video_recorder=None,
     done = False
     _pctrl_rng = np.random.default_rng() if p_control_pos_noise_std > 0 else None
 
+    # Sampled per-episode (e.g. one of rock_x/rock_y/random_fixed) — capture for reporting,
+    # since env.step()'s info dict doesn't carry it (only reset()'s does).
+    orientation_mode = getattr(env.path, '_orientation_mode', 'fixed')
+    print(f"  Orientation mode (this episode): {orientation_mode}")
+
     if episode_recorder:
         episode_recorder.reset()
 
@@ -277,8 +304,10 @@ def run_episode(env, agent, obs_rms, video_recorder=None,
     while not done:
         # Get current state (needed for P-control and recording)
         state = env._get_robot_state()
-        target_pos = env.path.position(env.s_current % env.path.total_length)
         s_current = env.s_current
+        s_mod = s_current % env.path.total_length
+        target_pos = env.path.position(s_mod)
+        target_quat = env.path.orientation(s_mod)
 
         # Select action
         if feedforward_only:
@@ -304,7 +333,7 @@ def run_episode(env, agent, obs_rms, video_recorder=None,
         # Record data
         if episode_recorder:
             episode_recorder.record_step(
-                obs, action, reward, info, state, target_pos, s_current
+                obs, action, reward, info, state, target_pos, s_current, target_quat=target_quat
             )
 
         obs = obs_rms.normalize(next_obs)
@@ -312,7 +341,11 @@ def run_episode(env, agent, obs_rms, video_recorder=None,
 
     print(f"  Episode completed: {step} steps")
 
-    return episode_recorder.get_episode_data() if episode_recorder else None
+    if episode_recorder is None:
+        return None
+    episode_data = episode_recorder.get_episode_data()
+    episode_data['orientation_mode'] = orientation_mode
+    return episode_data
 
 
 def create_plots(episode_data, output_dir, episode_idx, dt):
@@ -332,11 +365,20 @@ def create_plots(episode_data, output_dir, episode_idx, dt):
         show=False
     )
 
-    # Error timeline
+    # Error timeline (position, plus orientation if quaternions were tracked)
+    target_quats = episode_data.get('target_quaternions')
+    orientation_errors = None
+    if target_quats is not None and len(target_quats) == len(episode_data['ee_quaternions']):
+        orientation_errors = np.array([
+            geodesic_angle(q_actual, q_target)
+            for q_actual, q_target in zip(episode_data['ee_quaternions'], target_quats)
+        ])
+
     error_path = output_dir / f'episode_{episode_idx:03d}_error.png'
     plotter_traj.plot_error_timeline(
         episode_data['position_errors'],
         dt,
+        orientation_errors=orientation_errors,
         save_path=str(error_path),
         show=False
     )
@@ -365,10 +407,15 @@ def create_plots(episode_data, output_dir, episode_idx, dt):
 
 def compute_and_print_metrics(episode_data, dt, feedforward_only=False, p_control=False):
     """Compute and print episode metrics."""
+    target_quats = episode_data.get('target_quaternions')
+    has_orientation = target_quats is not None and len(target_quats) == len(episode_data['ee_quaternions'])
+
     # Tracking error
     tracking = compute_tracking_error_metrics(
         episode_data['ee_positions'],
-        episode_data['target_positions']
+        episode_data['target_positions'],
+        orientations=episode_data['ee_quaternions'] if has_orientation else None,
+        target_orientations=target_quats if has_orientation else None,
     )
 
     # EE kinematic jerk — always computed so feedforward and on-policy are comparable
@@ -378,6 +425,9 @@ def compute_and_print_metrics(episode_data, dt, feedforward_only=False, p_contro
     print(f"    Mean position error: {tracking['mean_position_error']*1000:.2f} mm")
     print(f"    Max position error: {tracking['max_position_error']*1000:.2f} mm")
     print(f"    RMS position error: {tracking['rms_position_error']*1000:.2f} mm")
+    if has_orientation:
+        print(f"    Mean orientation error: {np.degrees(tracking['mean_orientation_error']):.2f} deg")
+        print(f"    Max orientation error: {np.degrees(tracking['max_orientation_error']):.2f} deg")
     print(f"    EE integrated squared jerk: {ee_jerk['integrated_squared_jerk']:.6f} m²/s⁵")
     print(f"    EE RMS jerk: {ee_jerk['rms_jerk']:.6f} m/s³")
     print(f"    EE max jerk: {ee_jerk['max_jerk']:.6f} m/s³")
@@ -430,7 +480,8 @@ def main():
     render_mode = 'rgb_array' if args.mode in ['video', 'headless'] else None
     env = make_env(config, render_mode=render_mode, reverse_path=args.reverse_path,
                    path_type=args.path_type, fixed_start=args.fixed_start,
-                   bspline_seed=args.bspline_seed, obs_noise_config=obs_noise_config)
+                   bspline_seed=args.bspline_seed, obs_noise_config=obs_noise_config,
+                   orientation_mode_override=args.orientation_mode)
     print(f"  Observation space: {env.observation_space.shape}")
     print(f"  Action space: {env.action_space.shape}")
 

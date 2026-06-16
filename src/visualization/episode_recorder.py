@@ -40,7 +40,7 @@ class EpisodeRecorder:
         }
         self.step_count = 0
 
-    def record_step(self, obs, action, reward, info, state, target_pos, s):
+    def record_step(self, obs, action, reward, info, state, target_pos, s, target_quat=None):
         """Record one timestep.
 
         Args:
@@ -51,6 +51,7 @@ class EpisodeRecorder:
             state: RobotState object from env._get_robot_state()
             target_pos: Reference position
             s: Arc length
+            target_quat: Reference orientation quaternion [x,y,z,w], if tracked
         """
         self.data['observations'].append(obs.copy())
         self.data['actions'].append(action.copy())
@@ -66,6 +67,8 @@ class EpisodeRecorder:
 
         # Reference
         self.data['target_positions'].append(target_pos.copy())
+        if target_quat is not None:
+            self.data['target_quaternions'].append(target_quat.copy())
         self.data['arc_lengths'].append(s)
 
         # Metrics

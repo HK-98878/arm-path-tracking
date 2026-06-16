@@ -79,9 +79,14 @@ class InteractiveViewer:
             episode_data: Dict if episode_recorder provided, else None
         """
         obs, _ = env.reset()
+        if agent is not None:
+            agent.reset_hidden_state()
         obs = obs_rms.normalize(obs)
         done = False
         _pctrl_rng = np.random.default_rng() if p_control_pos_noise_std > 0 else None
+
+        orientation_mode = getattr(env.path, '_orientation_mode', 'fixed')
+        print(f"  Orientation mode (this episode): {orientation_mode}")
 
         if episode_recorder:
             episode_recorder.reset()
@@ -100,7 +105,9 @@ class InteractiveViewer:
                 step_start = time.time()
 
                 state = env._get_robot_state()
-                target_pos = env.path.position(env.s_current % env.path.total_length)
+                s_mod = env.s_current % env.path.total_length
+                target_pos = env.path.position(s_mod)
+                target_quat = env.path.orientation(s_mod)
 
                 # Select action
                 if feedforward_only:
@@ -124,7 +131,7 @@ class InteractiveViewer:
                 # Record data
                 if episode_recorder:
                     episode_recorder.record_step(
-                        obs, action, reward, info, state, target_pos, s_current
+                        obs, action, reward, info, state, target_pos, s_current, target_quat=target_quat
                     )
 
                 # Sync viewer
@@ -140,4 +147,8 @@ class InteractiveViewer:
 
         print(f"  Episode completed: {step} steps")
 
-        return episode_recorder.get_episode_data() if episode_recorder else None
+        if episode_recorder is None:
+            return None
+        episode_data = episode_recorder.get_episode_data()
+        episode_data['orientation_mode'] = orientation_mode
+        return episode_data
