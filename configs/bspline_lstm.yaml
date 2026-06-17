@@ -151,38 +151,38 @@ seed: 7
 # - Run 110: noise start delayed to stage 2 (bspline introduction). Stages 0–1 clean, so circle/fig-8
 #            build representations undisturbed as in Run 97. Graduated noise from 2/3 → full across
 #            stages 2–4, full in stage 5. Noise magnitudes unchanged from Run 109.
-# Run 119 -> 120: two fixes for orientation control failure root-caused after runs 117-119.
+# Run 120 -> 121: reverted to 6-stage curriculum (from Run 119's 7-stage).
 #
-# Fix 1 — observation frame error: rotation_error_rotvec computed R_c^{-1}*R_t (body frame)
-# but observation.py applied R_ew on top, double-transforming and producing a garbled signal.
-# Fixed rotation_error_rotvec to compute R_t*R_c^{-1} (world frame); R_ew @ world = correct
-# EE frame. This fix propagates to the IK solver as well.
+# Run 120 post-mortem: orientation tracking worked well (1-4° final errors) confirming the
+# two bug fixes + p_ori_alpha=0.05 are sufficient. But two regressions:
 #
-# Fix 2 — orientation P-control baseline (p_ori_alpha=0.05): the LSTM never gets to observe
-# orientation being corrected because there is no angular equivalent of the position P-control.
-# Without a baseline feedforward, obs[3:6] carries large errors that the arm never closes,
-# giving the LSTM no corrective loop to discover and augment. With p_ori_alpha=0.05, the arm
-# closes ~5% of angular error per step (10-step time constant), analogous to how p_control_alpha
-# was introduced in Run 87 to bootstrap position tracking. Validated standalone: gives 1-3°
-# orientation error vs ~20° baseline across circle/bspline/random_fixed/rock modes.
+# 1. Bspline position stuck at 23-32mm for the entire 2M steps of stage 3. Stage 3 had
+#    advance_threshold=0.020 with max_steps=null. Bspline was introduced simultaneously with
+#    3:1:1:1 orientation mixing — the combined load (random geometry + orientation competition
+#    + angular P-control corrections) created a high-jerk attractor that froze position.
+#    Stage only advanced via max_steps fallback at 2.5M, leaving only 2.5M for recovery.
+#    Final bspline position: 19.7mm (vs 5.3mm in Run 115).
 #
-# Run 118 -> 119: orientation-discovery diagnostic (post-118 correlation check, see notes)
-# showed corr(ori_error, action) still |r|<0.3, sign-inconsistent across all 3 axes at 2.4M
-# steps -- identical signature to the Run 117 failure despite 118's 4x longer post-transition
-# exploration window. Two independent runs now rule out "needs more exploration time."
+# 2. Circle jerk attractor formed at ~2.25M (still stage 3): 0.1 → 842 → 3331 m/s³ in two
+#    evals. Oscillated 300-3300 m/s³ through stage 6. jerk_l80 > jerk_full (745 vs 675 m/s³
+#    at 5M) confirms it was throughout the episode, not just startup.
 #
-# New stage 1 below isolates orientation discovery on its own: circle-only, speed/sig_pos left
-# at stage 0's trivial-position settings so the LSTM has full spare capacity to find the
-# error->action mapping with no fig8/bspline/speed-ramp/noise confound. Once introduced,
-# orientation is carried forward continuously (mixed modes every stage from here on) rather
-# than being switched back to 'fixed' and re-introduced later -- avoids re-running the same
-# discovery problem in a harder context. The original protective rationale for bspline
-# introduction (avoid competing with position-learning on the hardest path) is preserved by
-# biasing the mode list towards 'fixed' (3:1:1:1) for stage 3's bspline introduction only,
-# rather than dropping orientation variation entirely.
+# Root cause: the 7-stage bootstrap stage (circle-only, orientation introduced early) was
+# designed to solve an exploration/discovery problem that was actually caused by the two
+# orientation bugs. With bugs fixed, orientation is discovered without isolation. The bootstrap
+# stage's side effect — orientation variation introduced during bspline entry (stage 3) — was
+# the real problem, not the solution.
+#
+# Fix: 6-stage structure with fixed orientation through stages 0-2, then position consolidation
+# at speed=0.15 with fixed orientation (stage 3), then orientation introduced at stage 4 at
+# the same speed (no simultaneous speed+orientation ramp), then full-speed final stage.
+# This matches the Run 117/118 curriculum structure that gave good position results (Run 117:
+# circle 4.35mm, fig-8 5.39mm, bspline 6.93mm best). With the bugs now fixed and p_ori_alpha
+# in place, orientation should track well without the isolation bootstrap stage.
 curriculum:
   enabled: true
   stages:
+    # Stage 0: circle only, fixed orientation, slow speed — position foundation
     - speed: 0.05
       sig_pos: 0.05
       sig_ori: 0.50
@@ -197,84 +197,74 @@ curriculum:
       max_steps: 150000
       min_steps_in_stage: 30000
 
-    # NEW: orientation-discovery bootstrap. Speed/sig_pos unchanged from stage 0 (position is
-    # already solved here) so reward budget and exploration are free to focus on orientation.
-    - speed: 0.05
-      sig_pos: 0.05
-      sig_ori: 0.35
-      w_ori: 0.5
-      orientation_modes: ['fixed', 'rock_x', 'rock_y', 'random_fixed']
-      path_types: ['circle']
-      path_weights: [1.0]
-      obs_noise_pos_std: 0.0
-      obs_noise_vel_std: 0.0
-      lookahead_noise_std: 0.0
-      advance_threshold: 0.02
-      max_steps: 350000
-      min_steps_in_stage: 150000
-
+    # Stage 1: add fig-8, fixed orientation — multi-path position foundation
     - speed: 0.10
       sig_pos: 0.04
       sig_ori: 0.25
-      w_ori: 0.6
-      orientation_modes: ['fixed', 'rock_x', 'rock_y', 'random_fixed']
+      w_ori: 0.3
+      orientation_modes: ['fixed']
       path_types: ['circle', 'figure8']
       path_weights: [0.7, 0.3]
       obs_noise_pos_std: 0.0
       obs_noise_vel_std: 0.0
       lookahead_noise_std: 0.0
-      advance_threshold: 0.018
+      advance_threshold: 0.015
       max_steps: 400000
-      min_steps_in_stage: 100000
+      min_steps_in_stage: 200000
 
-    # bspline introduced: orientation mode list biased 3:1:1:1 towards 'fixed' so position
-    # learning on the hardest path still gets a majority-fixed signal, while the
-    # already-established orientation skill is maintained (not dropped) via continued exposure.
+    # Stage 2: bspline introduced, fixed orientation — position-first on all paths, no
+    # orientation competition. max_steps safety net prevents 2M-step stall (Run 120 lesson).
     - speed: 0.10
       sig_pos: 0.04
       sig_ori: 0.20
-      w_ori: 0.6
-      orientation_modes: ['fixed', 'fixed', 'fixed', 'rock_x', 'rock_y', 'random_fixed']
+      w_ori: 0.3
+      orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.55, 0.30, 0.15]
       obs_noise_pos_std: 0.002
       obs_noise_vel_std: 0.003
       lookahead_noise_std: 0.002
       min_curvature_radius: 0.12
-      advance_threshold: 0.020
-      max_steps: null
+      advance_threshold: 0.025
+      max_steps: 800000
       min_steps_in_stage: 100000
 
+    # Stage 3: speed ramp to 0.15, still fixed orientation — consolidate position at speed
+    # before adding orientation as an additional objective.
     - speed: 0.15
       sig_pos: 0.030
       sig_ori: 0.16
-      w_ori: 0.8
-      orientation_modes: ['fixed', 'rock_x', 'rock_y', 'random_fixed']
+      w_ori: 0.3
+      orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.45, 0.25, 0.30]
       obs_noise_pos_std: 0.002
       obs_noise_vel_std: 0.004
       lookahead_noise_std: 0.003
       min_curvature_radius: 0.09
-      advance_threshold: 0.06
-      max_steps: null
+      advance_threshold: 0.040
+      max_steps: 800000
       min_steps_in_stage: 100000
 
+    # Stage 4: orientation introduced at speed=0.15 (unchanged) — isolates orientation from
+    # speed ramp. With bugs fixed + p_ori_alpha=0.05, orientation corrective loop is visible
+    # from episode 1; no bootstrap isolation stage needed.
     - speed: 0.15
       sig_pos: 0.020
-      sig_ori: 0.14
-      w_ori: 0.9
+      sig_ori: 0.16
+      w_ori: 0.8
       orientation_modes: ['fixed', 'rock_x', 'rock_y', 'random_fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.40, 0.25, 0.35]
-      obs_noise_pos_std: 0.003
-      obs_noise_vel_std: 0.005
-      lookahead_noise_std: 0.004
+      obs_noise_pos_std: 0.002
+      obs_noise_vel_std: 0.004
+      lookahead_noise_std: 0.003
       min_curvature_radius: 0.09
-      advance_threshold: 0.04
+      advance_threshold: 0.050
       max_steps: null
       min_steps_in_stage: 100000
 
+    # Stage 5: full speed, variation only — fixed orientation removed
     - speed: 0.20
       sig_pos: 0.015
       sig_ori: 0.12
@@ -290,12 +280,6 @@ curriculum:
       max_steps: 2000000
 
   consecutive_evals: 3
-  # warmup_after_transition/ent_warmup_multiplier extended from 10000/2.0 (Run 117): the
-  # post-transition entropy boost decayed back to baseline within the first 10% of stage 4
-  # (370k-380k), well before the orientation action<->error correlation (checked on 400k/500k/
-  # 5M checkpoints, all ~-0.1 to +0.4, no stronger early than late) showed any sign of forming.
-  # Longer + stronger boost gives exploration more time to discover the corrective relationship
-  # before ent_coef decays it away.
   warmup_after_transition: 40000
   lr_warmup_multiplier: 2.0
   ent_warmup_multiplier: 3.0
