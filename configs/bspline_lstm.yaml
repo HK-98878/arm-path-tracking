@@ -62,7 +62,7 @@ reward:
   w_joint_vel: 0.001
   w_ee_jerk: 0.30
   ee_jerk_scale: 50.0
-  ee_jerk_clip: 50.0
+  ee_jerk_clip: 100.0
   w_vel_match: 0.0
   sig_pos: 0.15
   sig_ori: 0.50
@@ -151,6 +151,15 @@ seed: 7
 # - Run 110: noise start delayed to stage 2 (bspline introduction). Stages 0–1 clean, so circle/fig-8
 #            build representations undisturbed as in Run 97. Graduated noise from 2/3 → full across
 #            stages 2–4, full in stage 5. Noise magnitudes unchanged from Run 109.
+# Run 121 -> 122: ee_jerk_clip raised 50 → 100. Motivation: jerk_profile at 1.5M checkpoint
+# (20k into stage 5) showed excellent noisy jerk (22-25 m/s³, better than P-control) with
+# clean jerk 8-10 m/s³. Jerk then spiralled to 100-1000 m/s³ (oscillating) over the remaining
+# 3.5M steps of stage 5. Root cause: clip=50 means zero gradient once jerk exceeds 50 m/s³,
+# so the policy faces no penalty resistance as jerk drifts upward. clip=100 stays below the
+# theoretical zero-action attractor ceiling (~130 at stage 5 operating point: w_jerk*100/50=0.6
+# < w_pos*r_pos≈0.8) while extending gradient-active range into the 50-100 m/s³ region where
+# the drift first begins. Previously tried clip=200 (Run 89) which exceeded the ceiling; this
+# is a targeted raise that stays within safe bounds.
 # Run 120 -> 121: reverted to 6-stage curriculum (from Run 119's 7-stage).
 #
 # Run 120 post-mortem: orientation tracking worked well (1-4° final errors) confirming the
