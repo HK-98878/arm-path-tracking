@@ -158,6 +158,12 @@ seed: 7
 # Run 122 -> 123: revert ee_jerk_clip 50. Add intermediate stage 5 (speed=0.15, sig_pos=0.015)
 # to decouple tolerance tightening from speed ramp. R121 jerk spiral began when both changed
 # simultaneously; this ensures the policy adapts to tight sig_pos before the speed increase.
+# Run 123 -> 124: revert to pure upright (fixed orientation throughout all stages). Orientation
+# curriculum (R121-123) produced persistent fig-8 noise-sensitivity (239 m/s³ noisy jerk vs
+# ~20 m/s³ for R115) with jerk collapse already present at 1.4M (stage 5), not recoverable.
+# Position results with orientation (R123 best: 3.2/5.0mm fig-8/bspline) were better than R115
+# but deployment jerk is unacceptable. R124 keeps the refined 7-stage curriculum structure and
+# p_ori_alpha=0.05 as an angular stabiliser; all orientation_modes fixed, w_ori=0.3 throughout.
 # Run 120 -> 121: reverted to 6-stage curriculum (from Run 119's 7-stage).
 #
 # Run 120 post-mortem: orientation tracking worked well (1-4° final errors) confirming the
@@ -253,14 +259,13 @@ curriculum:
       max_steps: 800000
       min_steps_in_stage: 100000
 
-    # Stage 4: orientation introduced at speed=0.15 (unchanged) — isolates orientation from
-    # speed ramp. With bugs fixed + p_ori_alpha=0.05, orientation corrective loop is visible
-    # from episode 1; no bootstrap isolation stage needed.
+    # Stage 4: tighten sig_pos at speed=0.15, fixed orientation throughout — position
+    # consolidation step before final tolerance.
     - speed: 0.15
       sig_pos: 0.020
       sig_ori: 0.16
-      w_ori: 0.8
-      orientation_modes: ['fixed', 'rock_x', 'rock_y', 'random_fixed']
+      w_ori: 0.3
+      orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.40, 0.25, 0.35]
       obs_noise_pos_std: 0.002
@@ -272,14 +277,13 @@ curriculum:
       min_steps_in_stage: 100000
 
     # Stage 5: tighten sig_pos to 0.015 at same speed — decouples tolerance tightening from
-    # speed ramp. R121/122 jerk spiral happened in the old stage 5 where both jumped together.
-    # No advance threshold (policy can't reliably hit a position target at sig_pos=0.015
-    # before full speed); min_steps gates the transition instead.
+    # speed ramp. R121/122 jerk spiral happened when both jumped together.
+    # No advance threshold; min_steps gates the transition instead.
     - speed: 0.15
       sig_pos: 0.015
       sig_ori: 0.14
-      w_ori: 0.9
-      orientation_modes: ['rock_x', 'rock_y', 'random_fixed']
+      w_ori: 0.3
+      orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.25, 0.25, 0.50]
       obs_noise_pos_std: 0.003
@@ -294,8 +298,8 @@ curriculum:
     - speed: 0.20
       sig_pos: 0.015
       sig_ori: 0.12
-      w_ori: 1.0
-      orientation_modes: ['rock_x', 'rock_y', 'random_fixed']
+      w_ori: 0.3
+      orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.25, 0.25, 0.50]
       obs_noise_pos_std: 0.003
