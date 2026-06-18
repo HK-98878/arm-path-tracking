@@ -62,7 +62,7 @@ reward:
   w_joint_vel: 0.001
   w_ee_jerk: 0.30
   ee_jerk_scale: 50.0
-  ee_jerk_clip: 100.0
+  ee_jerk_clip: 50.0
   w_vel_match: 0.0
   sig_pos: 0.15
   sig_ori: 0.50
@@ -151,15 +151,13 @@ seed: 7
 # - Run 110: noise start delayed to stage 2 (bspline introduction). Stages 0–1 clean, so circle/fig-8
 #            build representations undisturbed as in Run 97. Graduated noise from 2/3 → full across
 #            stages 2–4, full in stage 5. Noise magnitudes unchanged from Run 109.
-# Run 121 -> 122: ee_jerk_clip raised 50 → 100. Motivation: jerk_profile at 1.5M checkpoint
-# (20k into stage 5) showed excellent noisy jerk (22-25 m/s³, better than P-control) with
-# clean jerk 8-10 m/s³. Jerk then spiralled to 100-1000 m/s³ (oscillating) over the remaining
-# 3.5M steps of stage 5. Root cause: clip=50 means zero gradient once jerk exceeds 50 m/s³,
-# so the policy faces no penalty resistance as jerk drifts upward. clip=100 stays below the
-# theoretical zero-action attractor ceiling (~130 at stage 5 operating point: w_jerk*100/50=0.6
-# < w_pos*r_pos≈0.8) while extending gradient-active range into the 50-100 m/s³ region where
-# the drift first begins. Previously tried clip=200 (Run 89) which exceeded the ceiling; this
-# is a targeted raise that stays within safe bounds.
+# Run 121 -> 122: ee_jerk_clip raised 50 → 100. Result: failed. clip=100 quadrupled the max
+# jerk penalty (15→60), suppressing bspline corner exploration in stage 2 — bspline stuck at
+# 30-37mm for the entire 800k steps of stage 2 (vs 4.8mm best in R121). Noise-sensitivity
+# failure emerged at 1.6M (fig-8 noisy jerk 368 m/s³ at 40× amplification vs 2× at 1.3M).
+# Run 122 -> 123: revert ee_jerk_clip 50. Add intermediate stage 5 (speed=0.15, sig_pos=0.015)
+# to decouple tolerance tightening from speed ramp. R121 jerk spiral began when both changed
+# simultaneously; this ensures the policy adapts to tight sig_pos before the speed increase.
 # Run 120 -> 121: reverted to 6-stage curriculum (from Run 119's 7-stage).
 #
 # Run 120 post-mortem: orientation tracking worked well (1-4° final errors) confirming the
@@ -273,7 +271,26 @@ curriculum:
       max_steps: null
       min_steps_in_stage: 100000
 
-    # Stage 5: full speed, variation only — fixed orientation removed
+    # Stage 5: tighten sig_pos to 0.015 at same speed — decouples tolerance tightening from
+    # speed ramp. R121/122 jerk spiral happened in the old stage 5 where both jumped together.
+    # No advance threshold (policy can't reliably hit a position target at sig_pos=0.015
+    # before full speed); min_steps gates the transition instead.
+    - speed: 0.15
+      sig_pos: 0.015
+      sig_ori: 0.14
+      w_ori: 0.9
+      orientation_modes: ['rock_x', 'rock_y', 'random_fixed']
+      path_types: ['circle', 'figure8', 'bspline']
+      path_weights: [0.25, 0.25, 0.50]
+      obs_noise_pos_std: 0.003
+      obs_noise_vel_std: 0.005
+      lookahead_noise_std: 0.004
+      min_curvature_radius: 0.07
+      advance_threshold: null
+      max_steps: 1000000
+      min_steps_in_stage: 500000
+
+    # Stage 6: full speed — policy already adapted to sig_pos=0.015 before speed increase
     - speed: 0.20
       sig_pos: 0.015
       sig_ori: 0.12
@@ -286,7 +303,7 @@ curriculum:
       lookahead_noise_std: 0.004
       min_curvature_radius: 0.07
       advance_threshold: null
-      max_steps: 2000000
+      max_steps: 2500000
 
   consecutive_evals: 3
   warmup_after_transition: 40000
