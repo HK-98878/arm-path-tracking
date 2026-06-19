@@ -19,7 +19,7 @@ env:
   start_position_noise: 0.06
   include_ee_accel: false
   p_control_alpha: 0.05
-  p_ori_alpha: 0.05
+  p_ori_alpha: 0.0
   warmup_steps: 50
 
 # Path (base config; curriculum stages override speed and path_types)
@@ -164,6 +164,15 @@ seed: 7
 # Position results with orientation (R123 best: 3.2/5.0mm fig-8/bspline) were better than R115
 # but deployment jerk is unacceptable. R124 keeps the refined 7-stage curriculum structure and
 # p_ori_alpha=0.05 as an angular stabiliser; all orientation_modes fixed, w_ori=0.3 throughout.
+# Run 125 -> 126: p_ori_alpha 0.05 → 0.0. Checkpoint analysis (1.2M/2.2M/5M) showed the
+# attractor is not present at 1.2M (all paths clean: noisy jerk 17-20 m/s³, 2× amplification),
+# forms on circle during stage 5 (1.2M→2.2M, speed=0.15, sig_pos=0.015), then spreads to
+# fig-8 and bspline in stage 6. p_ori_alpha injects angular disturbances that compound under
+# observation noise — w_ori=0.8 delayed the onset vs R124 (w_ori=0.3) but didn't prevent it.
+# With Bug 1 fixed (obs[3:6] now correct world-frame error), w_ori=0.8 alone provides a clean
+# learning signal for wrist stabilisation without a P-control baseline. 7-stage curriculum and
+# w_ori=0.8 unchanged — this is the meaningful difference from R115 (w_ori=0.3, no 7-stage).
+#
 # Run 124 -> 125: R124 failed — bspline jerk attractor formed at stage 4 (sig_pos=0.020)
 # immediately (jerk_l80 127→615 m/s³ within 30k steps). Root cause: p_ori_alpha + observation
 # noise creates a physical feedback loop (noisy position observations → policy overcorrects →
