@@ -164,6 +164,19 @@ seed: 7
 # Position results with orientation (R123 best: 3.2/5.0mm fig-8/bspline) were better than R115
 # but deployment jerk is unacceptable. R124 keeps the refined 7-stage curriculum structure and
 # p_ori_alpha=0.05 as an angular stabiliser; all orientation_modes fixed, w_ori=0.3 throughout.
+# Run 124 -> 125: R124 failed — bspline jerk attractor formed at stage 4 (sig_pos=0.020)
+# immediately (jerk_l80 127→615 m/s³ within 30k steps). Root cause: p_ori_alpha + observation
+# noise creates a physical feedback loop (noisy position observations → policy overcorrects →
+# wrist drifts → p_ori_alpha injects angular corrections → more position disturbance). R115
+# had the same noise schedule without p_ori_alpha and worked. R121 had p_ori_alpha + w_ori=0.8
+# in stage 4 (full orientation variation) and stage 4 worked — jerk spiral came later in stage 5.
+# Fix: w_ori raised to 0.8 from stage 3 onward (matching R121's stage 4 value). With active
+# orientation reward on the fixed target, the LSTM learns to coordinate angular actions with
+# p_ori_alpha's corrections rather than treating them as disturbance. Orientation error
+# observation (obs[3:6]) is not noised, so the learning signal is clean throughout. Fixed-only
+# modes are retained — corrections needed are small (stabilising ~10-15° natural wrist drift)
+# and pose no risk of R120's position-regression failure (which came from rock/random_fixed
+# modes during bspline introduction, not fixed).
 # Run 120 -> 121: reverted to 6-stage curriculum (from Run 119's 7-stage).
 #
 # Run 120 post-mortem: orientation tracking worked well (1-4° final errors) confirming the
@@ -242,12 +255,13 @@ curriculum:
       max_steps: 800000
       min_steps_in_stage: 100000
 
-    # Stage 3: speed ramp to 0.15, still fixed orientation — consolidate position at speed
-    # before adding orientation as an additional objective.
+    # Stage 3: speed ramp to 0.15, w_ori raised to 0.8 — active orientation reward on fixed
+    # target so LSTM learns to coordinate angular actions with p_ori_alpha before stage 4
+    # sig_pos tightening. Gradient is meaningful at natural wrist drift of 10-15° (sig_ori=0.16).
     - speed: 0.15
       sig_pos: 0.030
       sig_ori: 0.16
-      w_ori: 0.3
+      w_ori: 0.8
       orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.45, 0.25, 0.30]
@@ -259,12 +273,12 @@ curriculum:
       max_steps: 800000
       min_steps_in_stage: 100000
 
-    # Stage 4: tighten sig_pos at speed=0.15, fixed orientation throughout — position
-    # consolidation step before final tolerance.
+    # Stage 4: tighten sig_pos at speed=0.15 — orientation learning established in stage 3
+    # should prevent the p_ori_alpha jerk attractor that killed R124.
     - speed: 0.15
       sig_pos: 0.020
       sig_ori: 0.16
-      w_ori: 0.3
+      w_ori: 0.8
       orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.40, 0.25, 0.35]
@@ -282,7 +296,7 @@ curriculum:
     - speed: 0.15
       sig_pos: 0.015
       sig_ori: 0.14
-      w_ori: 0.3
+      w_ori: 0.8
       orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.25, 0.25, 0.50]
@@ -298,7 +312,7 @@ curriculum:
     - speed: 0.20
       sig_pos: 0.015
       sig_ori: 0.12
-      w_ori: 0.3
+      w_ori: 0.8
       orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.25, 0.25, 0.50]
