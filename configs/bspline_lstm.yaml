@@ -188,6 +188,23 @@ seed: 7
 #     By stage 5, bspline was stuck at 20mm with no improvement for 1M steps. Tighter threshold
 #     (12mm) forces bspline to genuinely learn before advancing; 300k min_steps as a floor.
 #
+# Run 127 -> 128: Remove intermediate stage 5 (speed=0.15, sig_pos=0.015), reverting to
+# 6-stage curriculum matching R115's structure. R127 analysis showed residual tracking error
+# is now purely lateral (corner undershoot), not path-lag — consistent with the intermediate
+# stage training the policy to cut corners at speed=0.15 (where the jerk penalty makes gentle
+# recovery from undershoot cheaper than a tight pre-emptive turn-in). The corner-cutting
+# strategy then persists into stage 5 (speed=0.20). R115 (6-stage) had significantly better
+# corner tracking and lower jerk under the same lookahead config — the simultaneous speed +
+# sig_pos pressure in the final stage appears to force the policy to develop tighter corners
+# rather than settling into the cut-and-recover equilibrium. The intermediate stage was added
+# to guard against the R121 jerk spiral (which occurred when both sig_pos and speed jumped
+# together), but that spiral was an orientation-training artifact (w_ori=0.8 + clip=50 ceiling
+# interaction). With p_ori_alpha=0 and w_ori=0.3, the guard is no longer needed.
+# Next to try regardless of R128 outcome: path-tangent-frame lookahead (replace EE-frame
+# with path-tangent-frame for lookahead points and position error). Makes lateral path
+# curvature directly visible as a consistent lateral offset in lookahead slots, independent
+# of arm pose — the most principled fix for chord-cutting if curriculum change is insufficient.
+#
 # Run 124 -> 125: R124 failed — bspline jerk attractor formed at stage 4 (sig_pos=0.020)
 # immediately (jerk_l80 127→615 m/s³ within 30k steps). Root cause: p_ori_alpha + observation
 # noise creates a physical feedback loop (noisy position observations → policy overcorrects →
@@ -318,25 +335,9 @@ curriculum:
       max_steps: null
       min_steps_in_stage: 100000
 
-    # Stage 5: tighten sig_pos to 0.015 at same speed — decouples tolerance tightening from
-    # speed ramp. R121/122 jerk spiral happened when both jumped together.
-    # No advance threshold; min_steps gates the transition instead.
-    - speed: 0.15
-      sig_pos: 0.015
-      sig_ori: 0.14
-      w_ori: 0.3
-      orientation_modes: ['fixed']
-      path_types: ['circle', 'figure8', 'bspline']
-      path_weights: [0.25, 0.25, 0.50]
-      obs_noise_pos_std: 0.003
-      obs_noise_vel_std: 0.005
-      lookahead_noise_std: 0.004
-      min_curvature_radius: 0.07
-      advance_threshold: null
-      max_steps: 1000000
-      min_steps_in_stage: 500000
-
-    # Stage 6: full speed — policy already adapted to sig_pos=0.015 before speed increase
+    # Stage 5: full speed + tight sig_pos simultaneously. R115 used this same simultaneous
+    # jump and achieved better corner tracking than R127's decoupled approach. The combined
+    # pressure forces pre-emptive corner corrections rather than a cut-and-recover equilibrium.
     - speed: 0.20
       sig_pos: 0.015
       sig_ori: 0.12
