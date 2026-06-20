@@ -173,6 +173,21 @@ seed: 7
 # learning signal for wrist stabilisation without a P-control baseline. 7-stage curriculum and
 # w_ori=0.8 unchanged — this is the meaningful difference from R115 (w_ori=0.3, no 7-stage).
 #
+# Run 126 -> 127: Two fixes from R126 post-mortem.
+# (1) w_ori 0.8 → 0.3 (stages 3–6). R126 confirmed p_ori_alpha was not the primary jerk
+#     culprit: removing it did not prevent the stage-5/6 noise-amplification jerk spiral.
+#     Fig-8 jerk spikes appeared at 950k (stage 5) without p_ori_alpha, same pattern as R121-R125.
+#     R115 (w_ori=0.3, no p_ori_alpha, fixed orientation) was clean at ~21 m/s³ — the only
+#     remaining structural difference is w_ori=0.8. With p_ori_alpha=0 and fixed orientation
+#     there is no justification for w_ori=0.8; the rationale (coordinating with p_ori_alpha
+#     corrections) is gone. Reverted to match R115.
+# (2) Stage 2 advance_threshold 0.025 → 0.012, min_steps 100k → 300k. In R126, stage 2's
+#     advance_threshold (max across paths) was met from the very first bspline eval (bspline
+#     debuted at 16.5mm < 25mm due to transfer from circle/fig-8). All of stages 2/3/4 hit
+#     their 100k min_steps floors, giving bspline only 300k steps total before sig_pos=0.015.
+#     By stage 5, bspline was stuck at 20mm with no improvement for 1M steps. Tighter threshold
+#     (12mm) forces bspline to genuinely learn before advancing; 300k min_steps as a floor.
+#
 # Run 124 -> 125: R124 failed — bspline jerk attractor formed at stage 4 (sig_pos=0.020)
 # immediately (jerk_l80 127→615 m/s³ within 30k steps). Root cause: p_ori_alpha + observation
 # noise creates a physical feedback loop (noisy position observations → policy overcorrects →
@@ -249,6 +264,10 @@ curriculum:
 
     # Stage 2: bspline introduced, fixed orientation — position-first on all paths, no
     # orientation competition. max_steps safety net prevents 2M-step stall (Run 120 lesson).
+    # R126 lesson: advance_threshold 0.025 was met immediately (bspline at 16mm < 25mm on first
+    # eval) because circle+fig-8's 85% weight dominates the max. min_steps floor was the only
+    # gate, so bspline got 100k steps before advancing. Tightened to 0.012 so bspline must
+    # genuinely improve from ~16mm → 12mm before stage 3. min_steps raised to 300k as a floor.
     - speed: 0.10
       sig_pos: 0.04
       sig_ori: 0.20
@@ -260,17 +279,18 @@ curriculum:
       obs_noise_vel_std: 0.003
       lookahead_noise_std: 0.002
       min_curvature_radius: 0.12
-      advance_threshold: 0.025
+      advance_threshold: 0.012
       max_steps: 800000
-      min_steps_in_stage: 100000
+      min_steps_in_stage: 300000
 
-    # Stage 3: speed ramp to 0.15, w_ori raised to 0.8 — active orientation reward on fixed
-    # target so LSTM learns to coordinate angular actions with p_ori_alpha before stage 4
-    # sig_pos tightening. Gradient is meaningful at natural wrist drift of 10-15° (sig_ori=0.16).
+    # Stage 3: speed ramp to 0.15, fixed orientation.
+    # R126 lesson: w_ori=0.8 was retained from R125 to "coordinate with p_ori_alpha" but
+    # p_ori_alpha=0 so that rationale is gone. w_ori=0.8 with obs noise drives the same
+    # noise-amplification jerk spiral as R121-R125 starting in stage 5. Reverted to 0.3.
     - speed: 0.15
       sig_pos: 0.030
       sig_ori: 0.16
-      w_ori: 0.8
+      w_ori: 0.3
       orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.45, 0.25, 0.30]
@@ -282,12 +302,11 @@ curriculum:
       max_steps: 800000
       min_steps_in_stage: 100000
 
-    # Stage 4: tighten sig_pos at speed=0.15 — orientation learning established in stage 3
-    # should prevent the p_ori_alpha jerk attractor that killed R124.
+    # Stage 4: tighten sig_pos at speed=0.15.
     - speed: 0.15
       sig_pos: 0.020
       sig_ori: 0.16
-      w_ori: 0.8
+      w_ori: 0.3
       orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.40, 0.25, 0.35]
@@ -305,7 +324,7 @@ curriculum:
     - speed: 0.15
       sig_pos: 0.015
       sig_ori: 0.14
-      w_ori: 0.8
+      w_ori: 0.3
       orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.25, 0.25, 0.50]
@@ -321,7 +340,7 @@ curriculum:
     - speed: 0.20
       sig_pos: 0.015
       sig_ori: 0.12
-      w_ori: 0.8
+      w_ori: 0.3
       orientation_modes: ['fixed']
       path_types: ['circle', 'figure8', 'bspline']
       path_weights: [0.25, 0.25, 0.50]
