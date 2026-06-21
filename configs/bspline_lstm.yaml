@@ -190,20 +190,30 @@ seed: 7
 #
 # Run 127 -> 128: Remove intermediate stage 5 (speed=0.15, sig_pos=0.015), reverting to
 # 6-stage curriculum matching R115's structure. R127 analysis showed residual tracking error
-# is now purely lateral (corner undershoot), not path-lag — consistent with the intermediate
-# stage training the policy to cut corners at speed=0.15 (where the jerk penalty makes gentle
-# recovery from undershoot cheaper than a tight pre-emptive turn-in). The corner-cutting
-# strategy then persists into stage 5 (speed=0.20). R115 (6-stage) had significantly better
-# corner tracking and lower jerk under the same lookahead config — the simultaneous speed +
-# sig_pos pressure in the final stage appears to force the policy to develop tighter corners
-# rather than settling into the cut-and-recover equilibrium. The intermediate stage was added
-# to guard against the R121 jerk spiral (which occurred when both sig_pos and speed jumped
-# together), but that spiral was an orientation-training artifact (w_ori=0.8 + clip=50 ceiling
-# interaction). With p_ori_alpha=0 and w_ori=0.3, the guard is no longer needed.
-# Next to try regardless of R128 outcome: path-tangent-frame lookahead (replace EE-frame
-# with path-tangent-frame for lookahead points and position error). Makes lateral path
-# curvature directly visible as a consistent lateral offset in lookahead slots, independent
-# of arm pose — the most principled fix for chord-cutting if curriculum change is insufficient.
+# is purely lateral and on the OUTSIDE of corners (EE runs wide, not inside/chord-cutting).
+# Mechanism: path turns, reference velocity points into the corner, but the jerk penalty
+# prevents fast enough velocity direction change — EE overshoots the corner outward, then
+# has to overcorrect back. On circles: consistent outer lateral error. On variable-curvature
+# paths: oscillation between close and wide at each curve.
+# At speed=0.15 (intermediate stage), corners need less centripetal acceleration so the jerk
+# penalty bites less and the policy develops a lazy turn-in strategy. At speed=0.20 the same
+# corners demand faster velocity redirection, but the lazy strategy persists. R115 (6-stage)
+# had to develop a 0.20-speed-appropriate corner strategy from the start, producing tighter
+# tracking and lower jerk. The intermediate stage was added to guard against the R121 jerk
+# spiral (which occurred when both sig_pos and speed jumped together), but that spiral was an
+# orientation-training artifact (w_ori=0.8 + clip=50 ceiling interaction). With p_ori_alpha=0
+# and w_ori=0.3, the guard is no longer needed.
+#
+# Run 128 -> 129: Path-tangent-frame lookahead. Lookahead points in observation.py changed
+# from EE frame (R_ew @ displacement) to path-tangent frame (R_pt @ displacement), where
+# R_pt is built from path.tangent(s_current) with the standard right-hand frame
+# (forward=tangent, lateral=cross(up,tangent), normal=cross(tangent,lateral)).
+# A right-hand turn now always has positive lateral offset in lookahead slots regardless of
+# arm pose, allowing the LSTM to anticipate velocity redirection without disentangling EE
+# orientation from path geometry. Position error and velocities remain in EE frame
+# (corrective loop operates there; no action-frame mismatch introduced).
+# Curvature vectors (curvature_n=0, unused) already used path-tangent frame; R_pt
+# construction is now shared. Observation dimension unchanged.
 #
 # Run 124 -> 125: R124 failed — bspline jerk attractor formed at stage 4 (sig_pos=0.020)
 # immediately (jerk_l80 127→615 m/s³ within 30k steps). Root cause: p_ori_alpha + observation
