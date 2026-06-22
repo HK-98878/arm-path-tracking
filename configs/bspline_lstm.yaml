@@ -348,6 +348,10 @@ curriculum:
     # Stage 5: full speed + tight sig_pos simultaneously. R115 used this same simultaneous
     # jump and achieved better corner tracking than R127's decoupled approach. The combined
     # pressure forces pre-emptive corner corrections rather than a cut-and-recover equilibrium.
+    # Two-slope jerk penalty active here only: steeper gradient in (ee_jerk_clip, ee_jerk_clip2]
+    # resists the slow jerk drift that the flat clip ceiling allows in stage 5.
+    # Safety check: max penalty = w_ee_jerk*clip/scale + w_ee_jerk_excess*(clip2-clip)/scale
+    #             = 0.30*50/50 + 0.45*50/50 = 0.30 + 0.45 = 0.75 < r_pos at operating point (~0.90)
     - speed: 0.20
       sig_pos: 0.015
       sig_ori: 0.12
@@ -361,6 +365,8 @@ curriculum:
       min_curvature_radius: 0.07
       advance_threshold: null
       max_steps: 2500000
+      ee_jerk_clip2: 100
+      w_ee_jerk_excess: 0.45
 
   consecutive_evals: 3
   warmup_after_transition: 40000

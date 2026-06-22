@@ -37,6 +37,8 @@ class TrackingReward:
         w_ee_jerk: float = 0.0,
         ee_jerk_scale: float = 1.0,
         ee_jerk_clip: Optional[float] = None,
+        ee_jerk_clip2: Optional[float] = None,
+        w_ee_jerk_excess: float = 0.0,
         pos_reward_type: str = 'gaussian',
     ):
         """Initialize reward computer.
@@ -87,6 +89,8 @@ class TrackingReward:
         self.w_ee_jerk = w_ee_jerk
         self.ee_jerk_scale = max(ee_jerk_scale, 1e-8)
         self.ee_jerk_clip = ee_jerk_clip
+        self.ee_jerk_clip2 = ee_jerk_clip2
+        self.w_ee_jerk_excess = w_ee_jerk_excess
         self.pos_reward_type = pos_reward_type
 
     def compute(
@@ -191,13 +195,21 @@ class TrackingReward:
         p_joint_vel = effective_w_joint_vel * np.sum(joint_vel ** 2)
 
         # EE jerk penalty: penalise EE acceleration squared (physical jerk in workspace).
-        # Gated by pos_quality: suppressed during recovery so the policy can accelerate
-        # freely when far off-path. Complements CAPS temporal smoothness (which acts on
-        # policy outputs) with a direct physical signal.
+        # Two-slope structure (when ee_jerk_clip2 and w_ee_jerk_excess are set):
+        #   [0, ee_jerk_clip]:  slope = w_ee_jerk / scale          (base region)
+        #   (ee_jerk_clip, ee_jerk_clip2]: slope = w_ee_jerk_excess / scale  (steeper region)
+        #   above ee_jerk_clip2: flat                               (safety ceiling)
+        # With only ee_jerk_clip set (legacy): flat above the kink.
         p_ee_jerk = 0.0
         if self.w_ee_jerk > 0 and ee_accel_sq is not None:
-            accel_sq = ee_accel_sq if self.ee_jerk_clip is None else min(ee_accel_sq, self.ee_jerk_clip)
-            p_ee_jerk = self.w_ee_jerk * accel_sq / self.ee_jerk_scale
+            kink = self.ee_jerk_clip
+            base = self.w_ee_jerk * (ee_accel_sq if kink is None else min(ee_accel_sq, kink)) / self.ee_jerk_scale
+            excess_p = 0.0
+            if self.w_ee_jerk_excess > 0 and kink is not None and ee_accel_sq > kink:
+                cap = self.ee_jerk_clip2
+                excess = (min(ee_accel_sq, cap) - kink) if cap is not None else (ee_accel_sq - kink)
+                excess_p = self.w_ee_jerk_excess * excess / self.ee_jerk_scale
+            p_ee_jerk = base + excess_p
 
         # Total reward
         reward = r_pos + r_ori + r_vel + r_vel_match - p_action_rate - p_joint_vel - p_ee_jerk

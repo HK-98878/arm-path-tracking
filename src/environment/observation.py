@@ -3,7 +3,7 @@
 Constructs the observation vector (for n=7 joints):
 - Position error (EE frame): 3
 - Orientation error (rotation vector, EE frame): 3
-- Lookahead points (path-tangent frame): 15 (5 points × 3)
+- Lookahead points (EE frame): 15 (5 points × 3)
 - Reference velocity (EE frame): 3
 - EE linear velocity (EE frame): 3
 - EE angular velocity (EE frame): 3
@@ -15,11 +15,6 @@ Constructs the observation vector (for n=7 joints):
 - Joint limit proximity: 7
 
 Total: 58 dimensions (without EE accel) or 61 (with EE accel)
-
-Lookahead points use the path-tangent frame (forward/lateral/normal relative to path
-direction at s_current) rather than EE frame. This makes corner direction consistent:
-a right-hand turn always has positive lateral offset in slot [1], regardless of arm pose.
-Position error and velocities remain in EE frame (corrective loop operates there).
 """
 
 import numpy as np
@@ -110,22 +105,10 @@ class ObservationBuilder:
             obs: (obs_dim,) observation vector
 
         Note:
-            Lookahead points are in path-tangent frame (forward/lateral/normal at s_current).
-            Position error and velocities are in EE frame (corrective loop operates there).
+            All path-relative quantities are in EE frame for generalization.
         """
         # EE frame rotation: world -> EE
         R_ew = state.ee_rot_world.T  # Transpose = inverse for rotation
-
-        # Path-tangent frame at s_current: used for lookahead and curvature.
-        # Axes: forward = path tangent, lateral = cross(up, tangent), normal = cross(tangent, lateral)
-        t_cur = path.tangent(s_current)
-        world_up = np.array([0., 0., 1.])
-        if abs(np.dot(t_cur, world_up)) > 0.9:  # near-vertical tangent: fall back to X
-            world_up = np.array([1., 0., 0.])
-        n_cur = np.cross(world_up, t_cur)
-        n_cur /= np.linalg.norm(n_cur)
-        b_cur = np.cross(t_cur, n_cur)
-        R_pt = np.column_stack([t_cur, n_cur, b_cur]).T  # world -> path-tangent
 
         # (a) Position error in EE frame
         p_target = path.position(s_current)
@@ -143,19 +126,15 @@ class ObservationBuilder:
             # Step 1: no orientation error (fill with zeros)
             ori_err_ee = np.zeros(3)
 
-        # (c) Lookahead points in path-tangent frame.
-        # Using path-tangent frame (not EE frame) makes corner direction consistent:
-        # a right-hand turn always has positive lateral offset regardless of arm pose,
-        # allowing the LSTM to anticipate velocity redirection without disentangling
-        # EE orientation from path geometry.
+        # (c) Lookahead points in EE frame
         # ds must be signed: for reversed paths (negative speed), lookahead goes toward lower s
         ds_signed = self.lookahead_ds * np.sign(getattr(path, 'speed', 1.0))
         lookahead_world = path.lookahead_points(s_current, self.lookahead_n, ds_signed)
         lookahead_ee = []
         for p_k in lookahead_world:
-            # Relative to current EE position, in path-tangent frame
-            p_rel_pt = R_pt @ (p_k - state.ee_pos_world)
-            lookahead_ee.append(p_rel_pt)
+            # Relative to current EE position, in EE frame
+            p_rel_ee = R_ew @ (p_k - state.ee_pos_world)
+            lookahead_ee.append(p_rel_ee)
         lookahead_ee = np.concatenate(lookahead_ee)  # (lookahead_n * 3,)
 
         # (c2) Curvature vectors in path-tangent frame: d²r/ds² at distant arc-length samples.
@@ -164,6 +143,17 @@ class ObservationBuilder:
         # Zero on straight segments; points toward centre of curvature at corners.
         curvature_ee = np.empty(0, dtype=np.float64)
         if self.curvature_n > 0:
+            # Build path-tangent frame at s_current.
+            t_cur = path.tangent(s_current)          # unit tangent
+            world_up = np.array([0., 0., 1.])
+            if abs(np.dot(t_cur, world_up)) > 0.9:   # near-vertical tangent: fall back
+                world_up = np.array([1., 0., 0.])
+            n_cur = np.cross(world_up, t_cur)
+            n_cur /= np.linalg.norm(n_cur)
+            b_cur = np.cross(t_cur, n_cur)
+            # R_world_to_path.T = [t_cur | n_cur | b_cur], so R_world_to_path projects world → frame
+            R_pt = np.column_stack([t_cur, n_cur, b_cur]).T
+
             closed = getattr(path, 'closed', True)
             total = path.total_length
             curv_parts = []
@@ -175,7 +165,7 @@ class ObservationBuilder:
                 t0 = path.tangent(s_k)
                 t1 = path.tangent(s_k1)
                 curv_world = (t1 - t0) / abs(self.lookahead_ds)
-                curv_parts.append(R_pt @ curv_world)
+                curv_parts.append(R_world_to_path @ curv_world)
             curvature_ee = np.concatenate(curv_parts)  # (curvature_n * 3,)
 
         # (d) Reference velocity in EE frame
