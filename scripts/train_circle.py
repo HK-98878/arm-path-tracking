@@ -211,6 +211,101 @@ def check_for_spike(current_error, previous_error, threshold_ratio=2.0):
     return False
 
 
+def save_training_state(path, timestep, num_episodes, curriculum, scheduler, warmup_end_step):
+    """Save lightweight training state alongside a checkpoint."""
+    state = {
+        'timestep': timestep,
+        'num_episodes': num_episodes,
+        'curriculum_stage': curriculum.current_stage if curriculum.enabled else 0,
+        'curriculum_steps_in_stage': curriculum.steps_in_stage if curriculum.enabled else 0,
+        'curriculum_eval_history': curriculum.eval_history if curriculum.enabled else [],
+        'scheduler_steps_since_transition': (
+            scheduler.steps_since_transition
+            if scheduler.steps_since_transition != float('inf') else -1
+        ),
+        'warmup_end_step': warmup_end_step,
+    }
+    with open(path, 'w') as f:
+        json.dump(state, f, indent=2)
+
+
+def load_training_state(path):
+    """Load companion training state from a JSON file."""
+    with open(path) as f:
+        state = json.load(f)
+    if state['scheduler_steps_since_transition'] == -1:
+        state['scheduler_steps_since_transition'] = float('inf')
+    return state
+
+
+def find_latest_checkpoint(output_dir):
+    """Return the latest checkpoint from the current (unprefixed) training run, or None.
+
+    Only considers unprefixed files (checkpoint_*.pt, final_model.pt) so it
+    doesn't accidentally pick a checkpoint from a previous numbered run.
+    To resume from a prior run use --resume <path> explicitly.
+    """
+    output_dir = Path(output_dir)
+
+    def step_num(p):
+        try:
+            return int(p.stem.rsplit('_', 1)[-1])
+        except ValueError:
+            return -1
+
+    cur = sorted(output_dir.glob('checkpoint_*.pt'), key=step_num)
+    if cur:
+        return cur[-1]
+
+    plain = output_dir / 'final_model.pt'
+    if plain.exists():
+        return plain
+
+    return None
+
+
+def find_companion_files(checkpoint_path):
+    """Return (state_file, log_file) for a checkpoint, either may be None.
+
+    state_file: precise training_state JSON saved alongside new checkpoints.
+    log_file:   training_log JSON used for backward-compat inference on old runs.
+
+    Handles both prefixed naming (130_checkpoint_5000000.pt) and unprefixed.
+    """
+    ckpt = Path(checkpoint_path)
+    parent = ckpt.parent
+    parts = ckpt.stem.split('_')
+
+    # Detect optional run-id prefix and step suffix
+    prefix = parts[0] if parts[0].isdigit() else None
+    step = int(parts[-1]) if parts[-1].isdigit() else None
+
+    # Companion training state (new-style checkpoints only)
+    state_file = None
+    if step is not None:
+        candidates = []
+        if prefix:
+            candidates.append(parent / f'{prefix}_training_state_{step}.json')
+        candidates.append(parent / f'training_state_{step}.json')
+        for c in candidates:
+            if c.exists():
+                state_file = c
+                break
+
+    # Training log (for backward-compat inference or log extension)
+    log_file = None
+    candidates = []
+    if prefix:
+        candidates.append(parent / f'{prefix}_training_log.json')
+    candidates.append(parent / 'training_log.json')
+    for c in candidates:
+        if c.exists():
+            log_file = c
+            break
+
+    return state_file, log_file
+
+
 def make_env(config, bidirectional=False, include_orientation=False, path_type='circle'):
     """Create environment from config.
 
@@ -596,11 +691,12 @@ def evaluate_multi_path(config, stage_params, agent, obs_rms, num_episodes_per_p
     return aggregate
 
 
-def train(config):
+def train(config, resume_checkpoint=None):
     """Main training loop.
 
     Args:
         config: Configuration object
+        resume_checkpoint: Path to checkpoint to resume from, or None to start fresh
     """
     # Set random seeds
     np.random.seed(config.seed)
@@ -726,7 +822,77 @@ def train(config):
     # Curriculum warmup tracking (next timestep when normalization should freeze)
     warmup_end_step = warmup_steps if not curriculum.enabled else warmup_steps
 
-    for timestep in range(config.training.total_timesteps):
+    # Resume from checkpoint
+    start_timestep = 0
+    if resume_checkpoint is not None:
+        ckpt_path = Path(resume_checkpoint)
+        agent.load(str(ckpt_path), obs_rms=obs_rms, reward_normalizer=reward_normalizer)
+        start_timestep = agent.num_timesteps
+
+        state_file, log_file = find_companion_files(ckpt_path)
+        existing_log = None
+        if log_file is not None:
+            with open(log_file) as f:
+                existing_log = json.load(f)
+
+        if state_file is not None:
+            # Precise restoration from companion state file (new-style checkpoints)
+            state = load_training_state(str(state_file))
+            start_timestep = state['timestep']
+            num_episodes = state['num_episodes']
+            if curriculum.enabled:
+                curriculum.current_stage = state['curriculum_stage']
+                curriculum.steps_in_stage = state['curriculum_steps_in_stage']
+                curriculum.eval_history = state['curriculum_eval_history']
+            scheduler.steps_since_transition = state['scheduler_steps_since_transition']
+            warmup_end_step = state['warmup_end_step']
+        elif existing_log is not None:
+            # Backward-compat: infer curriculum state from training log
+            if curriculum.enabled:
+                transitions = existing_log.get('stage_transitions', [])
+                current_stage, last_step = 0, 0
+                for t in transitions:
+                    if t['timestep'] <= start_timestep:
+                        current_stage, last_step = t['stage'], t['timestep']
+                curriculum.current_stage = current_stage
+                curriculum.steps_in_stage = start_timestep - last_step
+                stage_evals = [
+                    {pt: m['pos_error_mean'] for pt, m in e.get('per_path', {}).items()}
+                    for e in existing_log.get('evaluations', [])
+                    if e.get('stage') == current_stage and e.get('per_path')
+                ]
+                curriculum.eval_history = stage_evals[-curriculum.consecutive_evals:]
+            # obs_rms frozen state already loaded from checkpoint; no active warmup
+            scheduler.steps_since_transition = float('inf')
+            warmup_end_step = 0
+
+        # Extend the existing training log rather than overwriting it
+        if existing_log is not None:
+            training_log = existing_log
+            training_log.setdefault('resumes', []).append({
+                'at_step': start_timestep,
+                'time': datetime.now().isoformat(),
+                'new_total_timesteps': config.training.total_timesteps,
+            })
+            if training_log.get('evaluations'):
+                prev_eval_error = training_log['evaluations'][-1]['pos_error_mean']
+
+        # Recreate environment at the resumed curriculum stage
+        if curriculum.enabled:
+            stage_params = curriculum.get_current_params()
+            env.close()
+            env, current_path_type = make_env_with_stage(config, stage_params, bidirectional=bidirectional)
+
+        obs, _ = env.reset()
+        agent.reset_hidden_state()
+        obs_rms.update(obs)  # no-op if normalizer is frozen
+        obs = obs_rms.normalize(obs)
+
+        stage_str = f", stage {curriculum.current_stage}" if curriculum.enabled else ""
+        print(f"\nResumed from step {start_timestep:,}{stage_str}")
+        print(f"  {config.training.total_timesteps - start_timestep:,} steps remaining")
+
+    for timestep in range(start_timestep, config.training.total_timesteps):
         # Curriculum and scheduler step counters
         curriculum.step()
         scheduler.step()
@@ -924,6 +1090,8 @@ def train(config):
         if (timestep + 1) % config.training.save_frequency == 0:
             checkpoint_path = output_dir / f"checkpoint_{timestep + 1}.pt"
             agent.save(str(checkpoint_path), obs_rms=obs_rms, reward_normalizer=reward_normalizer)
+            state_path = output_dir / f"training_state_{timestep + 1}.json"
+            save_training_state(str(state_path), timestep + 1, num_episodes, curriculum, scheduler, warmup_end_step)
             print(f"\n  Saved checkpoint: {checkpoint_path}")
 
     # Final save
@@ -948,10 +1116,24 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str,
                         default=str(project_root / "configs" / "circle_baseline.yaml"))
+    parser.add_argument('--resume', nargs='?', const='auto', metavar='CHECKPOINT',
+                        help='Resume training. Omit path to auto-detect latest checkpoint '
+                             'in the run output directory, or pass an explicit checkpoint path.')
     args = parser.parse_args()
 
     config_path = Path(args.config)
     print(f"Loading configuration from: {config_path}")
     config = load_config(config_path)
 
-    train(config)
+    resume_checkpoint = None
+    if args.resume == 'auto':
+        ckpt = find_latest_checkpoint(config.logging.output_dir)
+        if ckpt is None:
+            print(f"ERROR: no checkpoints found in {config.logging.output_dir}")
+            sys.exit(1)
+        print(f"Auto-detected checkpoint: {ckpt}")
+        resume_checkpoint = ckpt
+    elif args.resume:
+        resume_checkpoint = Path(args.resume)
+
+    train(config, resume_checkpoint=resume_checkpoint)

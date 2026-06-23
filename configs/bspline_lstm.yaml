@@ -104,7 +104,7 @@ caps:
 
 # Training
 training:
-  total_timesteps: 5000000
+  total_timesteps: 7000000
   eval_frequency: 10000
   save_frequency: 50000
   log_frequency: 1000
