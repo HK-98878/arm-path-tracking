@@ -163,6 +163,7 @@ class EETrackingEnv(gym.Env):
         self.p_control_alpha = p_control_alpha
         self.p_ori_alpha = p_ori_alpha
         self.warmup_steps = warmup_steps
+        self._obs_noise_pos_std = obs_noise_config.get('obs_noise_pos_std', 0.0) if obs_noise_config else 0.0
 
         # Bspline config: set from make_env_with_stage() for per-episode regeneration
         self._bspline_config: Optional[dict] = None
@@ -531,7 +532,9 @@ class EETrackingEnv(gym.Env):
         # accelerates to tracking speed before RL takes over.
         if self.p_control_alpha > 0:
             target_pos = self.path.position(s_wrapped)
-            ee_pos_now = self.data.xpos[self.ee_body_id]
+            ee_pos_now = self.data.xpos[self.ee_body_id].copy()
+            if self._obs_noise_pos_std > 0:
+                ee_pos_now += self.np_random.normal(0.0, self._obs_noise_pos_std, 3)
             feedforward_linear = self.p_control_alpha * (target_pos - ee_pos_now)
         else:
             v_ref = self.path.velocity(s_wrapped)
