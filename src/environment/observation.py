@@ -88,6 +88,7 @@ class ObservationBuilder:
         include_orientation: bool = False,
         prev_ee_vel: Optional[np.ndarray] = None,
         rng: Optional[np.random.Generator] = None,
+        pos_noise_world: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """Build observation vector.
 
@@ -100,6 +101,9 @@ class ObservationBuilder:
                          acceleration computation; required when include_ee_accel=True
             rng: Random generator for observation noise injection; noise is
                  skipped when None
+            pos_noise_world: Pre-generated world-frame position noise vector (3,).
+                When provided, applied to obs[0:3] instead of sampling fresh rng
+                noise, so the feedforward can use the identical noise sample.
 
         Returns:
             obs: (obs_dim,) observation vector
@@ -225,9 +229,15 @@ class ObservationBuilder:
 
         # Apply observation noise (training robustness)
         if rng is not None and self.obs_noise_config:
-            pos_std = self.obs_noise_config.get('obs_noise_pos_std', 0.0)
-            if pos_std > 0:
-                obs[0:3] += rng.normal(0.0, pos_std, 3).astype(np.float32)
+            if pos_noise_world is not None:
+                # Use pre-generated world-frame noise so feedforward and observation
+                # see the same apparent EE position. Adding noise_world to ee_pos
+                # subtracts R_ew @ noise_world from the EE-frame position error.
+                obs[0:3] -= (R_ew @ pos_noise_world).astype(np.float32)
+            else:
+                pos_std = self.obs_noise_config.get('obs_noise_pos_std', 0.0)
+                if pos_std > 0:
+                    obs[0:3] += rng.normal(0.0, pos_std, 3).astype(np.float32)
 
             la_std = self.obs_noise_config.get('lookahead_noise_std', 0.0)
             if la_std > 0:

@@ -164,6 +164,10 @@ class EETrackingEnv(gym.Env):
         self.p_ori_alpha = p_ori_alpha
         self.warmup_steps = warmup_steps
         self._obs_noise_pos_std = obs_noise_config.get('obs_noise_pos_std', 0.0) if obs_noise_config else 0.0
+        # World-frame pos noise shared between obs and feedforward each step.
+        # Seeded from the obs build; used by feedforward on the next step so both
+        # operate on the same apparent EE position.
+        self._last_pos_noise_world = np.zeros(3)
 
         # Bspline config: set from make_env_with_stage() for per-episode regeneration
         self._bspline_config: Optional[dict] = None
@@ -337,6 +341,8 @@ class EETrackingEnv(gym.Env):
             0.1 * _err_ee / self.action_scale[:3], -1.0, 1.0
         ).astype(np.float32)
 
+        self._last_pos_noise_world = np.zeros(3)  # no noise on reset obs; step 0 feedforward gets clean baseline
+
         obs = self.obs_builder.build(
             state, self.path, self.s_current,
             include_orientation=self.include_orientation,
@@ -409,12 +415,20 @@ class EETrackingEnv(gym.Env):
         state_new = self._get_robot_state()
         state_new.prev_action = action  # Update previous action
 
+        # Generate pos noise once; shared between obs[0:3] and next step's feedforward
+        # so the policy always acts on a consistent apparent EE position.
+        if self._obs_noise_pos_std > 0:
+            self._last_pos_noise_world = self.np_random.normal(0.0, self._obs_noise_pos_std, 3)
+        else:
+            self._last_pos_noise_world = np.zeros(3)
+
         # Compute observation (use wrapped s for path lookups)
         obs = self.obs_builder.build(
             state_new, self.path, s_wrapped,
             include_orientation=self.include_orientation,
             prev_ee_vel=self.prev_ee_vel,
             rng=self.np_random,
+            pos_noise_world=self._last_pos_noise_world,
         )
 
         # Compute reward
@@ -533,8 +547,9 @@ class EETrackingEnv(gym.Env):
         if self.p_control_alpha > 0:
             target_pos = self.path.position(s_wrapped)
             ee_pos_now = self.data.xpos[self.ee_body_id].copy()
-            if self._obs_noise_pos_std > 0:
-                ee_pos_now += self.np_random.normal(0.0, self._obs_noise_pos_std, 3)
+            # Use the same noise that was applied to obs[0:3] last step — feedforward
+            # and policy both see the same apparent EE position (zeros on first step).
+            ee_pos_now += self._last_pos_noise_world
             feedforward_linear = self.p_control_alpha * (target_pos - ee_pos_now)
         else:
             v_ref = self.path.velocity(s_wrapped)
