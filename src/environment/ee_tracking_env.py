@@ -54,6 +54,7 @@ class EETrackingEnv(gym.Env):
         p_control_alpha: float = 0.0,
         p_ori_alpha: float = 0.0,
         warmup_steps: int = 0,
+        p_control_noisy_feedforward: bool = False,
     ):
         """Initialize environment.
 
@@ -163,10 +164,11 @@ class EETrackingEnv(gym.Env):
         self.p_control_alpha = p_control_alpha
         self.p_ori_alpha = p_ori_alpha
         self.warmup_steps = warmup_steps
+        self.p_control_noisy_feedforward = p_control_noisy_feedforward
         self._obs_noise_pos_std = obs_noise_config.get('obs_noise_pos_std', 0.0) if obs_noise_config else 0.0
         # World-frame pos noise shared between obs and feedforward each step.
-        # Seeded from the obs build; used by feedforward on the next step so both
-        # operate on the same apparent EE position.
+        # Seeded from the obs build; used by feedforward on the next step when
+        # p_control_noisy_feedforward is True, so both see the same apparent EE position.
         self._last_pos_noise_world = np.zeros(3)
 
         # Bspline config: set from make_env_with_stage() for per-episode regeneration
@@ -547,9 +549,10 @@ class EETrackingEnv(gym.Env):
         if self.p_control_alpha > 0:
             target_pos = self.path.position(s_wrapped)
             ee_pos_now = self.data.xpos[self.ee_body_id].copy()
-            # Use the same noise that was applied to obs[0:3] last step — feedforward
-            # and policy both see the same apparent EE position (zeros on first step).
-            ee_pos_now += self._last_pos_noise_world
+            if self.p_control_noisy_feedforward:
+                # Use the same noise that was applied to obs[0:3] last step so feedforward
+                # and policy both see the same apparent EE position (zeros on first step).
+                ee_pos_now += self._last_pos_noise_world
             feedforward_linear = self.p_control_alpha * (target_pos - ee_pos_now)
         else:
             v_ref = self.path.velocity(s_wrapped)

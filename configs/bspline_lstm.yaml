@@ -367,6 +367,7 @@ curriculum:
       max_steps: 2500000
       ee_jerk_clip2: 100
       w_ee_jerk_excess: 0.45
+      p_control_noisy_feedforward: true
 
   consecutive_evals: 3
   warmup_after_transition: 40000

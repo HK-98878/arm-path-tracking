@@ -476,6 +476,7 @@ def make_env_with_stage(config, stage_params, bidirectional=False, path_type_ove
         p_control_alpha=getattr(config.env, 'p_control_alpha', 0.0),
         p_ori_alpha=getattr(config.env, 'p_ori_alpha', 0.0),
         warmup_steps=getattr(config.env, 'warmup_steps', 0),
+        p_control_noisy_feedforward=stage_params.get('p_control_noisy_feedforward', False),
     )
 
     # Store bspline config on env for per-episode regeneration in reset()
