@@ -47,6 +47,7 @@ class EETrackingEnv(gym.Env):
         lookahead_n: int = 5,
         lookahead_ds: float = 0.02,
         curvature_n: int = 0,
+        include_binormal_err: bool = False,
         randomize_start_position: bool = False,
         start_position_noise: float = 0.06,
         include_ee_accel: bool = False,
@@ -125,6 +126,7 @@ class EETrackingEnv(gym.Env):
             lookahead_ds=lookahead_ds,
             curvature_n=curvature_n,
             include_ee_accel=include_ee_accel,
+            include_binormal_err=include_binormal_err,
             obs_noise_config=obs_noise_config,
             dt=dt,
         )

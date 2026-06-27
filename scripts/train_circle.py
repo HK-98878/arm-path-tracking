@@ -354,6 +354,7 @@ def make_env(config, bidirectional=False, include_orientation=False, path_type='
         lookahead_n=getattr(config.env, 'lookahead_n', 5),
         lookahead_ds=getattr(config.env, 'lookahead_ds', 0.02),
         curvature_n=getattr(config.env, 'curvature_n', 0),
+        include_binormal_err=getattr(config.env, 'include_binormal_err', False),
         randomize_start_position=getattr(config.env, 'randomize_start_position', False),
         start_position_noise=getattr(config.env, 'start_position_noise', 0.06),
         p_control_alpha=getattr(config.env, 'p_control_alpha', 0.0),
@@ -453,6 +454,7 @@ def make_env_with_stage(config, stage_params, bidirectional=False, path_type_ove
 
     # Whether to include EE acceleration in observation
     include_ee_accel = getattr(getattr(config, 'env', None), 'include_ee_accel', False)
+    include_binormal_err = getattr(getattr(config, 'env', None), 'include_binormal_err', False)
 
     # Create environment
     env = EETrackingEnv(
@@ -469,6 +471,7 @@ def make_env_with_stage(config, stage_params, bidirectional=False, path_type_ove
         lookahead_n=getattr(config.env, 'lookahead_n', 5),
         lookahead_ds=getattr(config.env, 'lookahead_ds', 0.02),
         curvature_n=getattr(config.env, 'curvature_n', 0),
+        include_binormal_err=include_binormal_err,
         randomize_start_position=getattr(config.env, 'randomize_start_position', False),
         start_position_noise=getattr(config.env, 'start_position_noise', 0.06),
         include_ee_accel=include_ee_accel,

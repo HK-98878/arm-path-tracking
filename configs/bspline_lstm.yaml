@@ -18,6 +18,7 @@ env:
   randomize_start_position: true
   start_position_noise: 0.06
   include_ee_accel: false
+  include_binormal_err: true
   p_control_alpha: 0.05
   p_ori_alpha: 0.0
   warmup_steps: 50

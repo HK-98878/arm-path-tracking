@@ -36,6 +36,7 @@ class ObservationBuilder:
         lookahead_ds: float = 0.02,
         curvature_n: int = 0,
         include_ee_accel: bool = False,
+        include_binormal_err: bool = False,
         obs_noise_config: Optional[Dict] = None,
         dt: float = 0.01,
     ):
@@ -60,6 +61,7 @@ class ObservationBuilder:
         self.lookahead_ds = lookahead_ds
         self.curvature_n = curvature_n
         self.include_ee_accel = include_ee_accel
+        self.include_binormal_err = include_binormal_err
         self.obs_noise_config = obs_noise_config or {}
         self.dt = dt
 
@@ -69,6 +71,7 @@ class ObservationBuilder:
             3 +  # orientation error
             lookahead_n * 3 +  # lookahead points
             curvature_n * 3 +  # curvature vectors (d²r/ds² at distant arc-length samples)
+            (1 if include_binormal_err else 0) +  # binormal component of position error
             3 +  # reference velocity
             3 +  # EE linear velocity
             3 +  # EE angular velocity
@@ -79,6 +82,12 @@ class ObservationBuilder:
             1 +  # manipulability
             n_joints  # joint limit proximity
         )
+
+    @property
+    def vel_start(self) -> int:
+        """Index of EE linear velocity in observation vector."""
+        return (3 + 3 + self.lookahead_n * 3 + self.curvature_n * 3
+                + (1 if self.include_binormal_err else 0) + 3)
 
     def build(
         self,
@@ -119,6 +128,22 @@ class ObservationBuilder:
         pos_err_world = p_target - state.ee_pos_world
         pos_err_ee = R_ew @ pos_err_world  # (3,)
 
+        # (a2) Binormal component of position error (optional)
+        # Builds world-up frame at s_current; b_cur points out of the osculating plane.
+        # Gives LSTM explicit off-plane error signal without changing existing frame conventions.
+        if self.include_binormal_err:
+            t_cur = path.tangent(s_current)
+            world_up = np.array([0., 0., 1.])
+            if abs(np.dot(t_cur, world_up)) > 0.9:
+                world_up = np.array([1., 0., 0.])
+            n_cur = np.cross(world_up, t_cur)
+            n_cur /= np.linalg.norm(n_cur)
+            b_cur = np.cross(t_cur, n_cur)
+            binormal_err = np.array([np.dot(b_cur, pos_err_world)], dtype=np.float32)
+        else:
+            b_cur = None
+            binormal_err = np.empty(0, dtype=np.float32)
+
         # (b) Orientation error in EE frame
         if include_orientation:
             q_target = path.orientation(s_current)
@@ -148,15 +173,15 @@ class ObservationBuilder:
         curvature_ee = np.empty(0, dtype=np.float64)
         if self.curvature_n > 0:
             # Build path-tangent frame at s_current.
-            t_cur = path.tangent(s_current)          # unit tangent
+            t_pt = path.tangent(s_current)          # unit tangent
             world_up = np.array([0., 0., 1.])
-            if abs(np.dot(t_cur, world_up)) > 0.9:   # near-vertical tangent: fall back
+            if abs(np.dot(t_pt, world_up)) > 0.9:   # near-vertical tangent: fall back
                 world_up = np.array([1., 0., 0.])
-            n_cur = np.cross(world_up, t_cur)
-            n_cur /= np.linalg.norm(n_cur)
-            b_cur = np.cross(t_cur, n_cur)
-            # R_world_to_path.T = [t_cur | n_cur | b_cur], so R_world_to_path projects world → frame
-            R_pt = np.column_stack([t_cur, n_cur, b_cur]).T
+            n_pt = np.cross(world_up, t_pt)
+            n_pt /= np.linalg.norm(n_pt)
+            b_pt = np.cross(t_pt, n_pt)
+            # R_world_to_path.T = [t_pt | n_pt | b_pt], so R_pt projects world → frame
+            R_pt = np.column_stack([t_pt, n_pt, b_pt]).T
 
             closed = getattr(path, 'closed', True)
             total = path.total_length
@@ -209,6 +234,7 @@ class ObservationBuilder:
             ori_err_ee,       # 3
             lookahead_ee,     # lookahead_n * 3
             curvature_ee,     # curvature_n * 3  (empty array when curvature_n=0)
+            binormal_err,     # 1 (empty array when include_binormal_err=False)
             v_ref_ee,         # 3
             ee_lin_vel_ee,    # 3
             ee_ang_vel_ee,    # 3
@@ -229,15 +255,23 @@ class ObservationBuilder:
 
         # Apply observation noise (training robustness)
         if rng is not None and self.obs_noise_config:
+            pos_std = self.obs_noise_config.get('obs_noise_pos_std', 0.0)
             if pos_noise_world is not None:
                 # Use pre-generated world-frame noise so feedforward and observation
                 # see the same apparent EE position. Adding noise_world to ee_pos
                 # subtracts R_ew @ noise_world from the EE-frame position error.
                 obs[0:3] -= (R_ew @ pos_noise_world).astype(np.float32)
+                if self.include_binormal_err and b_cur is not None:
+                    binormal_idx = 3 + 3 + self.lookahead_n * 3 + self.curvature_n * 3
+                    obs[binormal_idx] -= float(np.dot(b_cur, pos_noise_world))
             else:
-                pos_std = self.obs_noise_config.get('obs_noise_pos_std', 0.0)
                 if pos_std > 0:
-                    obs[0:3] += rng.normal(0.0, pos_std, 3).astype(np.float32)
+                    noise_ee = rng.normal(0.0, pos_std, 3).astype(np.float32)
+                    obs[0:3] += noise_ee
+                    if self.include_binormal_err and b_cur is not None:
+                        binormal_idx = 3 + 3 + self.lookahead_n * 3 + self.curvature_n * 3
+                        # Project a fresh noise sample onto binormal (same std as pos noise)
+                        obs[binormal_idx] += float(rng.normal(0.0, pos_std))
 
             la_std = self.obs_noise_config.get('lookahead_noise_std', 0.0)
             if la_std > 0:
@@ -247,9 +281,7 @@ class ObservationBuilder:
 
             vel_std = self.obs_noise_config.get('obs_noise_vel_std', 0.0)
             if vel_std > 0:
-                # EE linear velocity starts after: pos(3)+ori(3)+lookahead(n*3)+curvature(n*3)+ref_vel(3)
-                vel_start = 3 + 3 + self.lookahead_n * 3 + self.curvature_n * 3 + 3
-                obs[vel_start:vel_start + 3] += rng.normal(
+                obs[self.vel_start:self.vel_start + 3] += rng.normal(
                     0.0, vel_std, 3
                 ).astype(np.float32)
 
@@ -274,6 +306,7 @@ class ObservationBuilder:
             3 +  # ori error
             self.lookahead_n * 3 +  # lookahead
             self.curvature_n * 3 +  # curvature vectors
+            (1 if self.include_binormal_err else 0) +  # binormal error
             3 +  # ref vel
             3 +  # ee lin vel
             3 +  # ee ang vel

@@ -208,6 +208,7 @@ def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='cir
         lookahead_n=getattr(config.env, 'lookahead_n', 5),
         lookahead_ds=getattr(config.env, 'lookahead_ds', 0.02),
         curvature_n=getattr(config.env, 'curvature_n', 0),
+        include_binormal_err=getattr(config.env, 'include_binormal_err', False),
         randomize_start_position=False if fixed_start else getattr(config.env, 'randomize_start_position', False),
         start_position_noise=getattr(config.env, 'start_position_noise', 0.06),
         p_control_alpha=getattr(config.env, 'p_control_alpha', 0.0),
