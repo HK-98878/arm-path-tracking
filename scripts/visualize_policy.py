@@ -77,6 +77,8 @@ def parse_args():
                             '0.0 = no orientation control (default). Only active with --p-control.')
     parser.add_argument('--reverse-path', action='store_true',
                        help='Reverse path direction (negative speed)')
+    parser.add_argument('--speed', type=float, default=None,
+                       help='Override path speed (m/s). Defaults to final curriculum stage speed.')
     parser.add_argument('--fixed-start', action='store_true',
                         help='Force fixed nominal start position regardless of config')
     parser.add_argument('--path-type', type=str, default='circle',
@@ -140,13 +142,13 @@ def _get_final_stage_params(config):
 
 def make_env(config, render_mode='rgb_array', reverse_path=False, path_type='circle',
              fixed_start=False, bspline_seed=None, obs_noise_config=None,
-             orientation_mode_override=None):
+             orientation_mode_override=None, speed_override=None):
     """Create environment from config."""
     # Use the final curriculum stage speed so the visualizer matches training-eval conditions.
     # config.path.speed is the stage-0 base (0.1 m/s); the trained policy runs at stage-5
     # speed (0.2 m/s). Running at the wrong speed produces a 2x mismatch in dynamics.
     final_stage = _get_final_stage_params(config)
-    speed = final_stage.get('speed', config.path.speed)
+    speed = speed_override if speed_override is not None else final_stage.get('speed', config.path.speed)
     if reverse_path:
         speed = -speed
         print(f"  Reversed path direction: speed = {speed}")
@@ -495,7 +497,8 @@ def main():
     env = make_env(config, render_mode=render_mode, reverse_path=args.reverse_path,
                    path_type=args.path_type, fixed_start=args.fixed_start,
                    bspline_seed=args.bspline_seed, obs_noise_config=obs_noise_config,
-                   orientation_mode_override=args.orientation_mode)
+                   orientation_mode_override=args.orientation_mode,
+                   speed_override=args.speed)
     print(f"  Observation space: {env.observation_space.shape}")
     print(f"  Action space: {env.action_space.shape}")
 

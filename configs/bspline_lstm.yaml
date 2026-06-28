@@ -64,6 +64,8 @@ reward:
   w_ee_jerk: 0.30
   ee_jerk_scale: 11000.0
   ee_jerk_clip: 5000.0
+  w_ee_accel: 0.05
+  ee_accel_scale: 50.0
   w_vel_match: 0.0
   sig_pos: 0.15
   sig_ori: 0.50
@@ -346,14 +348,16 @@ curriculum:
       max_steps: null
       min_steps_in_stage: 100000
 
-    # Stage 5: full speed + tight sig_pos simultaneously. R115 used this same simultaneous
-    # jump and achieved better corner tracking than R127's decoupled approach. The combined
-    # pressure forces pre-emptive corner corrections rather than a cut-and-recover equilibrium.
-    # Two-slope jerk penalty active here only: steeper gradient in (ee_jerk_clip, ee_jerk_clip2]
-    # resists the slow jerk drift that the flat clip ceiling allows in stage 5.
-    # Safety check: max penalty = w_ee_jerk*clip/scale + w_ee_jerk_excess*(clip2-clip)/scale
-    #             = 0.30*5000/11000 + 0.45*15000/11000 = 0.136 + 0.614 = 0.75 < r_pos at operating point (~0.90)
-    # ee_jerk_clip/clip2 in m²/s⁶ (true jerk²). ~70 m/s³ and ~141 m/s³ thresholds respectively.
+    # Stage 5: full speed + tight sig_pos simultaneously.
+    # Two-slope true jerk penalty + accel² hybrid:
+    #   True jerk (Δa/dt)²: free corner authority; penalises only acceleration changes.
+    #   Accel² (clip=150): catches sustained corrective bursts that true jerk misses,
+    #     specifically the fig-8 crossing-point noise-induced sustained accelerations.
+    # Safety checks (max penalty vs r_pos at operating point ~0.90):
+    #   True jerk:  0.30*5000/11000 + 0.45*15000/11000 = 0.136 + 0.614 = 0.75
+    #   Accel²:     0.05*150/50 = 0.15
+    #   Combined:   0.75 + 0.15 = 0.90 — right at boundary; monitor for zero-action attractor.
+    # ee_jerk_clip/clip2 in m²/s⁶ (~70 m/s³ / ~141 m/s³). ee_accel_clip in m²/s⁴ (~12 m/s²).
     - speed: 0.20
       sig_pos: 0.015
       sig_ori: 0.12
@@ -369,6 +373,7 @@ curriculum:
       max_steps: 2500000
       ee_jerk_clip2: 20000
       w_ee_jerk_excess: 0.45
+      ee_accel_clip: 150
       p_control_noisy_feedforward: true
 
   consecutive_evals: 3

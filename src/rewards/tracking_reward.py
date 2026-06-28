@@ -39,6 +39,9 @@ class TrackingReward:
         ee_jerk_clip: Optional[float] = None,
         ee_jerk_clip2: Optional[float] = None,
         w_ee_jerk_excess: float = 0.0,
+        w_ee_accel: float = 0.0,
+        ee_accel_scale: float = 1.0,
+        ee_accel_clip: Optional[float] = None,
         pos_reward_type: str = 'gaussian',
     ):
         """Initialize reward computer.
@@ -91,6 +94,9 @@ class TrackingReward:
         self.ee_jerk_clip = ee_jerk_clip
         self.ee_jerk_clip2 = ee_jerk_clip2
         self.w_ee_jerk_excess = w_ee_jerk_excess
+        self.w_ee_accel = w_ee_accel
+        self.ee_accel_scale = max(ee_accel_scale, 1e-8)
+        self.ee_accel_clip = ee_accel_clip
         self.pos_reward_type = pos_reward_type
 
     def compute(
@@ -104,6 +110,7 @@ class TrackingReward:
         arc_progress: Optional[float] = None,
         vel_error_sq: Optional[float] = None,
         ee_jerk_sq: Optional[float] = None,
+        ee_accel_sq: Optional[float] = None,
     ) -> dict:
         """Compute reward and its components.
 
@@ -211,8 +218,16 @@ class TrackingReward:
                 excess_p = self.w_ee_jerk_excess * excess / self.ee_jerk_scale
             p_ee_jerk = base + excess_p
 
+        # EE accel penalty: penalise sustained corrective accelerations (accel²).
+        # Complements the true jerk penalty by providing gradient through sustained bursts
+        # that Δa/dt² misses when acceleration is large but not changing.
+        p_ee_accel = 0.0
+        if self.w_ee_accel > 0 and ee_accel_sq is not None:
+            capped = ee_accel_sq if self.ee_accel_clip is None else min(ee_accel_sq, self.ee_accel_clip)
+            p_ee_accel = self.w_ee_accel * capped / self.ee_accel_scale
+
         # Total reward
-        reward = r_pos + r_ori + r_vel + r_vel_match - p_action_rate - p_joint_vel - p_ee_jerk
+        reward = r_pos + r_ori + r_vel + r_vel_match - p_action_rate - p_joint_vel - p_ee_jerk - p_ee_accel
 
         return {
             'reward': float(reward),
@@ -223,6 +238,7 @@ class TrackingReward:
             'p_action_rate': float(p_action_rate),
             'p_joint_vel': float(p_joint_vel),
             'p_ee_jerk': float(p_ee_jerk),
+            'p_ee_accel': float(p_ee_accel),
             'pos_error': float(pos_error),
             'ori_error': float(ori_error) if ori_error is not None else 0.0,
         }
@@ -286,11 +302,18 @@ class TrackingReward:
         if self.w_vel_match > 0 and target_vel is not None:
             vel_error_sq = float(np.sum((ee_vel - target_vel) ** 2))
 
-        ee_jerk_sq = None
-        if self.w_ee_jerk > 0 and prev_ee_vel is not None and prev_ee_accel is not None:
+        ee_accel = None
+        if (self.w_ee_jerk > 0 or self.w_ee_accel > 0) and prev_ee_vel is not None:
             ee_accel = (ee_vel - prev_ee_vel) / dt
+
+        ee_jerk_sq = None
+        if self.w_ee_jerk > 0 and ee_accel is not None and prev_ee_accel is not None:
             ee_jerk = (ee_accel - prev_ee_accel) / dt
             ee_jerk_sq = float(np.sum(ee_jerk ** 2))
+
+        ee_accel_sq = None
+        if self.w_ee_accel > 0 and ee_accel is not None:
+            ee_accel_sq = float(np.sum(ee_accel ** 2))
 
         return self.compute(
             pos_error=pos_error,
@@ -302,6 +325,7 @@ class TrackingReward:
             arc_progress=arc_progress,
             vel_error_sq=vel_error_sq,
             ee_jerk_sq=ee_jerk_sq,
+            ee_accel_sq=ee_accel_sq,
         )
 
     def max_reward(self) -> float:
