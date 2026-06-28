@@ -62,8 +62,8 @@ reward:
   w_action_rate: 0.05
   w_joint_vel: 0.001
   w_ee_jerk: 0.30
-  ee_jerk_scale: 50.0
-  ee_jerk_clip: 50.0
+  ee_jerk_scale: 11000.0
+  ee_jerk_clip: 5000.0
   w_vel_match: 0.0
   sig_pos: 0.15
   sig_ori: 0.50
@@ -352,7 +352,8 @@ curriculum:
     # Two-slope jerk penalty active here only: steeper gradient in (ee_jerk_clip, ee_jerk_clip2]
     # resists the slow jerk drift that the flat clip ceiling allows in stage 5.
     # Safety check: max penalty = w_ee_jerk*clip/scale + w_ee_jerk_excess*(clip2-clip)/scale
-    #             = 0.30*50/50 + 0.45*50/50 = 0.30 + 0.45 = 0.75 < r_pos at operating point (~0.90)
+    #             = 0.30*5000/11000 + 0.45*15000/11000 = 0.136 + 0.614 = 0.75 < r_pos at operating point (~0.90)
+    # ee_jerk_clip/clip2 in m²/s⁶ (true jerk²). ~70 m/s³ and ~141 m/s³ thresholds respectively.
     - speed: 0.20
       sig_pos: 0.015
       sig_ori: 0.12
@@ -366,7 +367,7 @@ curriculum:
       min_curvature_radius: 0.07
       advance_threshold: null
       max_steps: 2500000
-      ee_jerk_clip2: 100
+      ee_jerk_clip2: 20000
       w_ee_jerk_excess: 0.45
       p_control_noisy_feedforward: true
 

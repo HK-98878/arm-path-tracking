@@ -162,6 +162,7 @@ class EETrackingEnv(gym.Env):
         self.step_count = 0
         self.prev_action = np.zeros(6, dtype=np.float32)
         self.prev_ee_vel = np.zeros(3, dtype=np.float64)
+        self.prev_ee_accel = np.zeros(3, dtype=np.float64)
 
         self.p_control_alpha = p_control_alpha
         self.p_ori_alpha = p_ori_alpha
@@ -326,6 +327,7 @@ class EETrackingEnv(gym.Env):
         self.step_count = 0
         self.prev_action = np.zeros(6, dtype=np.float32)
         self.prev_ee_vel = np.zeros(3, dtype=np.float64)
+        self.prev_ee_accel = np.zeros(3, dtype=np.float64)
 
         # Initialize desired joint position for integrated position control
         self.q_desired = self.data.qpos[:self.n_joints].copy()
@@ -440,6 +442,8 @@ class EETrackingEnv(gym.Env):
         target_vel = self.path.velocity(s_wrapped)
         target_quat = self.path.orientation(s_wrapped) if self.include_orientation else None
 
+        ee_accel_now = (state_new.ee_lin_vel_world - self.prev_ee_vel) / self.dt
+
         reward_dict = self.reward_computer.compute_from_state(
             ee_pos=state_new.ee_pos_world,
             ee_quat=state_new.ee_quat_world,
@@ -452,6 +456,7 @@ class EETrackingEnv(gym.Env):
             joint_vel=state_new.joint_vel,
             arc_progress=arc_progress,
             prev_ee_vel=self.prev_ee_vel,
+            prev_ee_accel=self.prev_ee_accel,
             dt=self.dt,
         )
 
@@ -460,6 +465,7 @@ class EETrackingEnv(gym.Env):
         # Update state
         self.prev_action = action.copy()
         self.prev_ee_vel = state_new.ee_lin_vel_world.copy()
+        self.prev_ee_accel = ee_accel_now
         self.step_count += 1
 
         # Episode termination

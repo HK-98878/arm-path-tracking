@@ -103,7 +103,7 @@ class TrackingReward:
         tangent_progress: Optional[float] = None,
         arc_progress: Optional[float] = None,
         vel_error_sq: Optional[float] = None,
-        ee_accel_sq: Optional[float] = None,
+        ee_jerk_sq: Optional[float] = None,
     ) -> dict:
         """Compute reward and its components.
 
@@ -201,13 +201,13 @@ class TrackingReward:
         #   above ee_jerk_clip2: flat                               (safety ceiling)
         # With only ee_jerk_clip set (legacy): flat above the kink.
         p_ee_jerk = 0.0
-        if self.w_ee_jerk > 0 and ee_accel_sq is not None:
+        if self.w_ee_jerk > 0 and ee_jerk_sq is not None:
             kink = self.ee_jerk_clip
-            base = self.w_ee_jerk * (ee_accel_sq if kink is None else min(ee_accel_sq, kink)) / self.ee_jerk_scale
+            base = self.w_ee_jerk * (ee_jerk_sq if kink is None else min(ee_jerk_sq, kink)) / self.ee_jerk_scale
             excess_p = 0.0
-            if self.w_ee_jerk_excess > 0 and kink is not None and ee_accel_sq > kink:
+            if self.w_ee_jerk_excess > 0 and kink is not None and ee_jerk_sq > kink:
                 cap = self.ee_jerk_clip2
-                excess = (min(ee_accel_sq, cap) - kink) if cap is not None else (ee_accel_sq - kink)
+                excess = (min(ee_jerk_sq, cap) - kink) if cap is not None else (ee_jerk_sq - kink)
                 excess_p = self.w_ee_jerk_excess * excess / self.ee_jerk_scale
             p_ee_jerk = base + excess_p
 
@@ -240,6 +240,7 @@ class TrackingReward:
         joint_vel: np.ndarray,
         arc_progress: Optional[float] = None,
         prev_ee_vel: Optional[np.ndarray] = None,
+        prev_ee_accel: Optional[np.ndarray] = None,
         dt: float = 0.01,
     ) -> dict:
         """Compute reward from full state (convenience wrapper).
@@ -285,10 +286,11 @@ class TrackingReward:
         if self.w_vel_match > 0 and target_vel is not None:
             vel_error_sq = float(np.sum((ee_vel - target_vel) ** 2))
 
-        ee_accel_sq = None
-        if self.w_ee_jerk > 0 and prev_ee_vel is not None:
+        ee_jerk_sq = None
+        if self.w_ee_jerk > 0 and prev_ee_vel is not None and prev_ee_accel is not None:
             ee_accel = (ee_vel - prev_ee_vel) / dt
-            ee_accel_sq = float(np.sum(ee_accel ** 2))
+            ee_jerk = (ee_accel - prev_ee_accel) / dt
+            ee_jerk_sq = float(np.sum(ee_jerk ** 2))
 
         return self.compute(
             pos_error=pos_error,
@@ -299,7 +301,7 @@ class TrackingReward:
             tangent_progress=tangent_progress,
             arc_progress=arc_progress,
             vel_error_sq=vel_error_sq,
-            ee_accel_sq=ee_accel_sq,
+            ee_jerk_sq=ee_jerk_sq,
         )
 
     def max_reward(self) -> float:
