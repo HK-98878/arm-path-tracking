@@ -18,7 +18,7 @@ env:
   randomize_start_position: true
   start_position_noise: 0.06
   include_ee_accel: false
-  include_binormal_err: true
+  include_binormal_err: false
   p_control_alpha: 0.05
   p_ori_alpha: 0.0
   warmup_steps: 50
@@ -64,8 +64,10 @@ reward:
   w_ee_jerk: 0.30
   ee_jerk_scale: 11000.0
   ee_jerk_clip: 5000.0
-  w_ee_accel: 0.05
-  ee_accel_scale: 50.0
+  w_ee_accel: 0.0      # Zero in stages 0-4; stage 5 overrides to 0.05 via w_ee_accel stage param.
+  ee_accel_scale: 50.0 # Accel² targets sustained corrective bursts under noise (fig-8 crossing-point).
+                       # Only meaningful once tracking is established — activating early creates a
+                       # zero-action attractor during exploration (R137 failure).
   w_vel_match: 0.0
   sig_pos: 0.15
   sig_ori: 0.50
@@ -373,6 +375,7 @@ curriculum:
       max_steps: 2500000
       ee_jerk_clip2: 20000
       w_ee_jerk_excess: 0.45
+      w_ee_accel: 0.05
       ee_accel_clip: 150
       p_control_noisy_feedforward: true
 

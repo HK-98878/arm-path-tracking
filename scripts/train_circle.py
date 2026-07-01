@@ -442,6 +442,8 @@ def make_env_with_stage(config, stage_params, bidirectional=False, path_type_ove
         reward_config['w_ee_jerk_excess'] = stage_params['w_ee_jerk_excess']
     if stage_params.get('ee_accel_clip') is not None:
         reward_config['ee_accel_clip'] = stage_params['ee_accel_clip']
+    if stage_params.get('w_ee_accel') is not None:
+        reward_config['w_ee_accel'] = stage_params['w_ee_accel']
 
     # Determine if orientation control is enabled
     include_orientation = reward_config.get('w_ori', 0) > 0
